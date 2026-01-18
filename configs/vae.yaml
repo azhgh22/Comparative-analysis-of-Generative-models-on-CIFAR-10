@@ -1,0 +1,4 @@
+latent_dim: 128
+epochs: 10
+lr: 0.001
+batch_size: 128
