@@ -1,9 +1,9 @@
 class Train:
-  def __init__(self, model, num_epochs, train_loader,checkpointer,device) -> None:
+  def __init__(self, model, num_epochs, train_loader, checkpointer, device) -> None:
     self.model = model
     self.num_epochs = num_epochs
     self.train_loader = train_loader
-    self.chechpointer = checkpointer
+    self.checkpoint = checkpointer
     self.device = device
 
     self.epoch_losses = []
@@ -27,7 +27,7 @@ class Train:
             epoch_losses[k] += losses[k]
 
         num_batches += 1
-        if(num_batches%500==0):
+        if num_batches % 500 == 0:
           print(num_batches)
 
       # Average losses over epoch
@@ -39,7 +39,7 @@ class Train:
       if verbose:
         print(f"Epoch: {epoch} ",epoch_losses)
 
-      self.chechpointer.save(epoch,{
+      self.checkpoint.save(epoch, {
         "model_state" : self.model.get_model_state(epoch),
         "epoch_losses" : self.epoch_losses,
         "current_epoch" : epoch
@@ -47,10 +47,10 @@ class Train:
 
     return self.epoch_losses
 
-  # -1 = load chechpoint of maximum epoch num
+  # -1 = load checkpoint of maximum epoch num
   def load_checkpoint(self,epoch_num = -1):
-    persist_dict = self.chechpointer.load(epoch_num)
-    if persist_dict == None:
+    persist_dict = self.checkpoint.load(epoch_num)
+    if persist_dict is None:
       return
     self.epoch_losses = persist_dict["epoch_losses"]
     self.current_epoch = persist_dict["current_epoch"] + 1
