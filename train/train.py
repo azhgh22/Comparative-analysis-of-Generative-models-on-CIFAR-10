@@ -14,13 +14,13 @@ class Train:
       epoch_losses = self.model.get_init_loss_dict()
 
       num_batches = 0
-      for p,m in self.train_loader:
+      for x,l in self.train_loader:
         # Send data to device
-        p = p.to(self.device)
-        m = m.to(self.device)
+        x = x.to(self.device)
+        # l = l.to(self.device)
 
         # Perform one training step
-        losses = self.model.train_step(p, m)
+        losses = self.model.train_step(x)
 
         # Accumulate losses for logging
         for k in epoch_losses.keys():

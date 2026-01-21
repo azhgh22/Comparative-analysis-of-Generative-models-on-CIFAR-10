@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from losses import vae_loss  # assumes vae_loss returns (total_loss, recon_loss, kl_loss)
+from losses.vae_loss import vae_loss  # assumes vae_loss returns (total_loss, recon_loss, kl_loss)
 
 class ConvVAE(nn.Module):
     def __init__(self, z_dim=128, beta=1):
@@ -35,6 +35,8 @@ class ConvVAE(nn.Module):
         # ---------- Optimizer & Scheduler placeholders ----------
         self.optimizer = None
         self.scheduler = None
+
+        self.set_optimizer()
 
     # -------- Forward and latent functions --------
     def encode(self, x):
@@ -110,4 +112,6 @@ class ConvVAE(nn.Module):
     def get_model_state(self, epoch):
         return {
           "epoch": epoch,
-          "weights": self.state_dict(),}
+          "weights": self.state_dict(),
+          "scheduler_info" : self.scheduler.state_dict()  
+        }
