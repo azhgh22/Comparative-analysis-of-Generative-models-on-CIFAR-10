@@ -1,10 +1,10 @@
 import torch
-from abc import abstractmethod
+from abc import abstractmethod, ABC
 from numpy import inf
 # from logger import TensorboardWriter
 
 
-class BaseTrainer:
+class BaseTrainer(ABC):
     """
     Base class for all trainers
     """
@@ -65,15 +65,15 @@ class BaseTrainer:
         for epoch in range(self.start_epoch, self.epochs + 1):
             result = self._train_epoch(epoch)
 
-            # save logged informations into log dict
+            # save logged information into log dict
             log = {'epoch': epoch}
             log.update(result)
 
-            # print logged informations to the screen
+            # print logged information to the screen
             for key, value in log.items():
                 self.logger.info('    {:15s}: {}'.format(str(key), value))
 
-            # evaluate model performance according to configured metric, save best checkpoint as model_best
+            # evaluate model performance according to configured metric, save the best checkpoint as model_best
             best = False
             if self.mnt_mode != 'off':
                 try:
@@ -95,7 +95,7 @@ class BaseTrainer:
                     not_improved_count += 1
 
                 if not_improved_count > self.early_stop:
-                    self.logger.info("Validation performance didn\'t improve for {} epochs. "
+                    self.logger.info("Validation performance didn't improve for {} epochs. "
                                      "Training stops.".format(self.early_stop))
                     break
 
@@ -107,7 +107,6 @@ class BaseTrainer:
         Saving checkpoints
 
         :param epoch: current epoch number
-        :param log: logging information of the epoch
         :param save_best: if True, rename the saved checkpoint to 'model_best.pth'
         """
         arch = type(self.model).__name__
