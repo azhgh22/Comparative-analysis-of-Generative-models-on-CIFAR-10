@@ -6,7 +6,7 @@ from torchvision import datasets, transforms
 def load_cifar10(batch_size=128, data_dir='./data'):
     transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
     
     train_dataset = datasets.CIFAR10(root=data_dir, train=True, download=True, transform=transform)
