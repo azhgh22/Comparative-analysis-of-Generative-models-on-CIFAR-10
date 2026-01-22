@@ -1,5 +1,8 @@
 # Dataset loading and preprocessing for CIFAR-10
 
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
+
 import torch
 from torchvision import datasets, transforms
 

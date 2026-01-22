@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from losses import vae_loss
 from base.base_model import BaseModel
 from .types_ import *
 
@@ -233,6 +234,10 @@ class VanillaVAE(BaseModel):
         """
 
         return self.forward(x)[0]
+
+    @staticmethod
+    def get_loss():
+        return vae_loss
 
     @staticmethod
     def get_init_loss_dict():
