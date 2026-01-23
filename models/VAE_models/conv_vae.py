@@ -109,14 +109,27 @@ class ConvVAE(nn.Module):
             "kl_loss": kl_loss.item()
         }
 
-    def vae_loss(self,recon_x, x, mu, logvar, beta):
-        # Reconstruction loss (MSE)
-        recon_loss = F.mse_loss(recon_x, x, reduction='sum')
-        
-        # KL Divergence
-        kl_div = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-      
-        return recon_loss + beta * kl_div, recon_loss, kl_div
+    def vae_loss(self,recon_x, x, mu, logvar, beta=1.0):
+        """
+        Computes VAE loss: reconstruction + KL divergence
+        - recon_x: reconstructed images [B, C, H, W]
+        - x: original images
+        - mu, logvar: latent parameters
+        - beta: KL weight
+        """
+        # -------- Reconstruction Loss --------
+        # Mean over batch and pixels (stabilizes scale)
+        recon_loss = F.mse_loss(recon_x, x, reduction='mean')
+
+        # -------- KL Divergence --------
+        # Sum over latent dim, mean over batch
+        kl_div = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)  # [B]
+        kl_div = kl_div.mean()  # average over batch
+
+        # -------- Total Loss --------
+        total_loss = recon_loss + beta * kl_div
+
+        return total_loss, recon_loss, kl_div
 
     def epoch_step(self):
         self.scheduler.step()
