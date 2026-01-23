@@ -20,7 +20,7 @@ class Train:
         # l = l.to(self.device)
 
         # Perform one training step
-        losses = self.model.train_step(x)
+        losses = self.model.train_step(x,epoch)
 
         # Accumulate losses for logging
         for k in epoch_losses.keys():
