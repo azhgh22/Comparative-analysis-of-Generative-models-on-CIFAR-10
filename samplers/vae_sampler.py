@@ -1,9 +1,8 @@
 # VAE Sampler: Sample from latent space and decode
 
 import torch
-from models.vae import Decoder
 
-def vae_sample(decoder, latent_dim=128, num_samples=16):
+def vae_sample(decoder, num_samples=16,device='cuda',latent_dim=128):
     z = torch.randn(num_samples, latent_dim)
-    samples = decoder(z)
+    samples = decoder(z.to(device))
     return samples

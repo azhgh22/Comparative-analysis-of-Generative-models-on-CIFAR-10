@@ -27,8 +27,8 @@ class Train:
             epoch_losses[k] += losses[k]
 
         num_batches += 1
-        if num_batches % 500 == 0:
-          print(num_batches)
+        # if num_batches % 500 == 0:
+        #   print(num_batches)
 
       # Average losses over epoch
       for k in epoch_losses:

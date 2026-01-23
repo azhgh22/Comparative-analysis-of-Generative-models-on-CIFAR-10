@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from losses.vae_loss import vae_loss  # assumes vae_loss returns (total_loss, recon_loss, kl_loss)
-
 
 class Encoder(nn.Module):
     def __init__(self, z_dim=128):
@@ -52,9 +50,8 @@ class Decoder(nn.Module):
         return self.deconv(h)
 
 class ConvVAE(nn.Module):
-    def __init__(self, z_dim=128, beta=1.0):
+    def __init__(self, z_dim=128):
         super().__init__()
-        self.beta = beta
 
         self.encoder = Encoder(z_dim)
         self.decoder = Decoder(z_dim)
@@ -96,11 +93,10 @@ class ConvVAE(nn.Module):
         # Forward
         recon_x, mu, logvar = self.forward(x)
 
-        beta = min(1.0, epoch / 10)
+        beta = 1.0#min(1.0, epoch / 10)
 
         # Loss with beta
-        total_loss, recon_loss, kl_loss = vae_loss(recon_x, x, mu, logvar,self.beta)
-        total_loss = recon_loss + self.beta * kl_loss
+        total_loss, recon_loss, kl_loss = self.vae_loss(recon_x, x, mu, logvar,beta)
 
         # Backward
         optimizer.zero_grad()
@@ -113,7 +109,16 @@ class ConvVAE(nn.Module):
             "kl_loss": kl_loss.item()
         }
 
-    def step_epoch(self):
+    def vae_loss(self,recon_x, x, mu, logvar, beta):
+        # Reconstruction loss (MSE)
+        recon_loss = F.mse_loss(recon_x, x, reduction='sum')
+        
+        # KL Divergence
+        kl_div = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+      
+        return recon_loss + beta * kl_div, recon_loss, kl_div
+
+    def epoch_step(self):
         self.scheduler.step()
 
     def get_init_loss_dict(self):
@@ -122,7 +127,6 @@ class ConvVAE(nn.Module):
     def get_model_state(self, epoch):
         return {
           "epoch": epoch,
-          "beta" : self.beta,
           "weights": self.state_dict(),
           "scheduler_info" : self.scheduler.state_dict() 
         }
@@ -130,5 +134,4 @@ class ConvVAE(nn.Module):
     def load_state(self, checkpoint):
       self.load_state_dict(checkpoint["weights"])
       self.scheduler.load_state_dict(checkpoint["scheduler_info"])
-      self.beta = checkpoint["beta"]
 
