@@ -93,7 +93,8 @@ class ConvVAE(nn.Module):
         # Forward
         recon_x, mu, logvar = self.forward(x)
 
-        beta = 1.0#min(1.0, epoch / 10)
+        warmup_epochs = 20
+        beta = min(1.0, epoch / warmup_epochs)
 
         # Loss with beta
         total_loss, recon_loss, kl_loss = self.vae_loss(recon_x, x, mu, logvar,beta)
@@ -119,7 +120,7 @@ class ConvVAE(nn.Module):
         """
         # -------- Reconstruction Loss --------
         # Mean over batch and pixels (stabilizes scale)
-        recon_loss = F.mse_loss(recon_x, x, reduction='mean')
+        recon_loss = F.mse_loss(recon_x, x, reduction='sum') / 128
 
         # -------- KL Divergence --------
         # Sum over latent dim, mean over batch
