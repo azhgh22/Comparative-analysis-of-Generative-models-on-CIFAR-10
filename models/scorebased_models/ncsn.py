@@ -346,12 +346,14 @@ def init_weights(m):
     if isinstance(m, nn.Conv2d):
         # 1. Convolutional Layers: Kaiming/He Normal
         # Standard for ReLU/ELU networks to maintain variance
+        print("Initializing Conv2d layer with Kaiming normal...")
         nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
 
     elif isinstance(m, nn.Linear):
         # 2. Linear Layers (Embeddings): Xavier/Glorot Uniform
+        print("Initializing Linear layer with Xavier uniform...")
         nn.init.xavier_uniform_(m.weight)
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
@@ -361,7 +363,7 @@ def init_weights(m):
         # The embedding outputs parameters [gamma, beta] for normalization.
         # We want the initial state to be: gamma ≈ 1, beta ≈ 0
         # This ensures the network starts as an Identity function regarding normalization.
-
+        print("Initializing ConditionalInstanceNorm2d embeddings...")
         num_features = m.num_features
 
         # The weight shape is (2 * num_features, embed_dim)

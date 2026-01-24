@@ -1,6 +1,6 @@
 import torch
 
-def get_device():
+def get_device() -> str:
     """
     Safely determine the best available device
 

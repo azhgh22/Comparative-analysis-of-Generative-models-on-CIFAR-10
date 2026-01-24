@@ -6,7 +6,7 @@ ssl._create_default_https_context = ssl._create_unverified_context
 import torch
 from torchvision import datasets, transforms
 
-def load_cifar10(batch_size=128, data_dir='./data'):
+def load_cifar10(batch_size: int=128, data_dir: str='./data') -> tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
     transform = transforms.Compose([
         transforms.ToTensor(),
         # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))

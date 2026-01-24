@@ -1,10 +1,23 @@
+from torch import nn
+from torch.utils.data import DataLoader
+
+from utils.checkpointer import Checkpointer
+from utils.get_device import get_device
+
+
 class Train:
-  def __init__(self, model, num_epochs, train_loader, checkpointer, device) -> None:
+  def __init__(self,
+               model: nn.Module,
+               num_epochs: int,
+               train_loader: DataLoader,
+               checkpointer: Checkpointer,
+               device: str = None) -> None:
     self.model = model
     self.num_epochs = num_epochs
     self.train_loader = train_loader
     self.checkpoint = checkpointer
-    self.device = device
+
+    self.device = device if device is not None else get_device()
 
     self.epoch_losses = []
     self.current_epoch = 1

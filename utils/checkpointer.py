@@ -2,7 +2,7 @@ import os
 import torch
 
 class Checkpointer:
-    def __init__(self, checkpoint_dir, model_name, save_every, del_prev=True):
+    def __init__(self, checkpoint_dir: str, model_name: str, save_every: int, del_prev: bool=True) -> None:
         self.checkpoint_dir = checkpoint_dir
         self.model_name = model_name
         self.save_every = save_every
@@ -10,7 +10,7 @@ class Checkpointer:
 
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
-    def save(self, epoch, state_dict):
+    def save(self, epoch: int, state_dict):
         # Only save every N epochs
         if epoch % self.save_every != 0:
             return
@@ -30,10 +30,11 @@ class Checkpointer:
 
     # ---- Helpers ---- #
 
-    def _extract_epoch(self, fname):
+    @staticmethod
+    def _extract_epoch(file_name):
         """Extract epoch number from 'model_epoch_XX.pt'."""
         try:
-            return int(fname.replace(".pt", "").split("_")[-1])
+            return int(file_name.replace(".pt", "").split("_")[-1])
         except:
             return -1
 
