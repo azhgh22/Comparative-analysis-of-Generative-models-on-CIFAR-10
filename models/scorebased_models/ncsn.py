@@ -73,7 +73,7 @@ class ScoreNet(nn.Module):
         # Gaussian Random Feature embedding for sigma (optional but stable)
         # Or simple One-hot/Linear embedding. Paper often used simple Dense layers.
         self.embed_dim = 256
-        self.noise_embed = nn.Sequential(
+        self.noise_level_embed = nn.Sequential(
             nn.Linear(1, self.embed_dim),
             nn.ELU(),
             nn.Linear(self.embed_dim, self.embed_dim)
@@ -115,7 +115,7 @@ class ScoreNet(nn.Module):
             sigma = sigma.view(-1, 1)
 
         # Log-transform sigma often helps stability
-        sigma_emb = self.noise_embed(torch.log(sigma))
+        sigma_emb = self.noise_level_embed(torch.log(sigma))
 
         # 2. Encoder
         h = self.conv_in(x)
