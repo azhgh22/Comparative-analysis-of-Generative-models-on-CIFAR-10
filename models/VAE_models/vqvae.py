@@ -1,0 +1,207 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class ResidualBlock(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.ReLU(),
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(channels, channels, kernel_size=1),
+        )
+
+    def forward(self, x):
+        return x + self.block(x)
+
+
+class VectorQuantizer(nn.Module):
+    def __init__(self, num_embeddings, embedding_dim, commitment_cost):
+        super().__init__()
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.commitment_cost = commitment_cost
+
+        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
+        self.embedding.weight.data.uniform_(
+            -1 / num_embeddings, 1 / num_embeddings
+        )
+
+    def forward(self, z):
+        # z: (B, C, H, W)
+        z = z.permute(0, 2, 3, 1).contiguous()
+        flat_z = z.view(-1, self.embedding_dim)
+
+        # Compute distances
+        distances = (
+            flat_z.pow(2).sum(1, keepdim=True)
+            - 2 * flat_z @ self.embedding.weight.t()
+            + self.embedding.weight.pow(2).sum(1)
+        )
+
+        encoding_indices = torch.argmin(distances, dim=1)
+        encodings = F.one_hot(
+            encoding_indices, self.num_embeddings
+        ).float()
+
+        quantized = encodings @ self.embedding.weight
+        quantized = quantized.view(z.shape)
+
+        # Losses
+        e_latent_loss = F.mse_loss(quantized.detach(), z)
+        q_latent_loss = F.mse_loss(quantized, z.detach())
+        loss = q_latent_loss + self.commitment_cost * e_latent_loss
+
+        # Straight-through estimator
+        quantized = z + (quantized - z).detach()
+        quantized = quantized.permute(0, 3, 1, 2).contiguous()
+
+        return quantized, loss, encoding_indices
+
+
+class Encoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(3, 256, kernel_size=4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(256, 256, kernel_size=4, stride=2, padding=1),
+            ResidualBlock(256),
+            ResidualBlock(256),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class Decoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            ResidualBlock(256),
+            ResidualBlock(256),
+            nn.ConvTranspose2d(256, 256, kernel_size=4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(256, 3, kernel_size=4, stride=2, padding=1),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class VQVAE(nn.Module):
+    def __init__(self, num_embeddings=256, commitment_cost=0.25):
+        super().__init__()
+
+        self.encoder = Encoder()
+        self.vq = VectorQuantizer(
+            num_embeddings=num_embeddings,
+            embedding_dim=256,
+            commitment_cost=commitment_cost,
+        )
+        self.decoder = Decoder()
+
+        # Paper optimizer: Adam, lr = 2e-4
+        lr = 2e-4
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+
+    # -------- Core API --------
+
+    def encode(self, x):
+        """
+        x: [B, 3, 32, 32]
+        returns z_e: [B, 256, 8, 8]
+        """
+        return self.encoder(x)
+
+    def quantize(self, z_e):
+        """
+        z_e: [B, 256, 8, 8]
+        returns:
+          z_q: [B, 256, 8, 8]
+          vq_loss: scalar
+          indices: [B * 8 * 8]
+        """
+        return self.vq(z_e)
+
+    def decode(self, z_q):
+        """
+        z_q: [B, 256, 8, 8]
+        returns recon: [B, 3, 32, 32]
+        """
+        return self.decoder(z_q)
+
+    def forward(self, x):
+        z_e = self.encode(x)
+        z_q, vq_loss, indices = self.quantize(z_e)
+        recon = self.decode(z_q)
+        return recon, vq_loss, indices
+
+    # -------- Loss --------
+
+    def vqvae_loss(self, recon_x, x, vq_loss):
+        """
+        recon_x: [B, 3, 32, 32]
+        x:       [B, 3, 32, 32]
+        vq_loss: scalar
+        """
+        # Reconstruction loss (paper uses MSE)
+        recon_loss = F.mse_loss(recon_x, x, reduction="sum") / x.size(0)
+
+        total_loss = recon_loss + vq_loss
+        return total_loss, recon_loss
+
+    # -------- Training step --------
+
+    def train_step(self, x, epoch=None):
+        """
+        Performs a single VQ-VAE training step
+        """
+        optimizer = self.optimizer
+
+        # Forward
+        recon_x, vq_loss, _ = self.forward(x)
+
+        # Loss
+        total_loss, recon_loss = self.vqvae_loss(recon_x, x, vq_loss)
+
+        # Backward
+        optimizer.zero_grad()
+        total_loss.backward()
+        optimizer.step()
+
+        return {
+            "total_loss": total_loss.item(),
+            "recon_loss": recon_loss.item(),
+            "vq_loss": vq_loss.item(),
+        }
+
+    # -------- Utilities --------
+
+    def epoch_step(self):
+      pass
+
+    def get_init_loss_dict(self):
+        return {
+            "total_loss": 0.0,
+            "recon_loss": 0.0,
+            "vq_loss": 0.0,
+        }
+
+    def get_model_state(self, epoch):
+        return {
+            "epoch": epoch,
+            "weights": self.state_dict(),
+        }
+
+    def load_state(self, checkpoint):
+        self.load_state_dict(checkpoint["weights"])
+
+
+    
+
