@@ -17,7 +17,7 @@ class ResidualBlock(nn.Module):
 
 
 class VectorQuantizer(nn.Module):
-    def __init__(self, num_embeddings, embedding_dim, commitment_cost):
+    def __init__(self, num_embeddings=256, embedding_dim=256, commitment_cost=0.25):
         super().__init__()
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
@@ -29,35 +29,46 @@ class VectorQuantizer(nn.Module):
         )
 
     def forward(self, z):
-        # z: (B, C, H, W)
-        z = z.permute(0, 2, 3, 1).contiguous()
-        flat_z = z.view(-1, self.embedding_dim)
+        """
+        z: [B, C, H, W]
+        returns:
+            quantized: [B, C, H, W]
+            vq_loss: scalar (mean over batch)
+            encoding_indices: [B, H*W]
+        """
+        B, C, H, W = z.shape
+
+        # Permute for convenience
+        z_perm = z.permute(0, 2, 3, 1).contiguous()  # [B,H,W,C]
+        flat_z = z_perm.view(B, -1, C)               # [B, H*W, C]
 
         # Compute distances
+        # distances shape: [B, H*W, num_embeddings]
         distances = (
-            flat_z.pow(2).sum(1, keepdim=True)
+            flat_z.pow(2).sum(-1, keepdim=True)
             - 2 * flat_z @ self.embedding.weight.t()
             + self.embedding.weight.pow(2).sum(1)
         )
 
-        encoding_indices = torch.argmin(distances, dim=1)
-        encodings = F.one_hot(
-            encoding_indices, self.num_embeddings
-        ).float()
+        # Find nearest embedding per latent
+        encoding_indices = torch.argmin(distances, dim=2)           # [B, H*W]
+        encodings = F.one_hot(encoding_indices, self.num_embeddings).float()  # [B,H*W,K]
 
-        quantized = encodings @ self.embedding.weight
-        quantized = quantized.view(z.shape)
+        # Quantize
+        quantized = torch.matmul(encodings, self.embedding.weight)  # [B,H*W,C]
+        quantized = quantized.view(B, H, W, C)                       # [B,H,W,C]
 
-        # Losses
-        e_latent_loss = F.mse_loss(quantized.detach(), z)
-        q_latent_loss = F.mse_loss(quantized, z.detach())
-        loss = q_latent_loss + self.commitment_cost * e_latent_loss
+        # -------- Compute VQ Losses --------
+        # sum over latents per sample, then mean over batch
+        e_latent_loss = ((quantized.detach() - z_perm) ** 2).sum(dim=(1,2,3))  # [B]
+        q_latent_loss = ((quantized - z_perm.detach()) ** 2).sum(dim=(1,2,3))  # [B]
+        vq_loss = (q_latent_loss + self.commitment_cost * e_latent_loss).mean()
 
         # Straight-through estimator
-        quantized = z + (quantized - z).detach()
-        quantized = quantized.permute(0, 3, 1, 2).contiguous()
+        quantized = z_perm + (quantized - z_perm).detach()
+        quantized = quantized.permute(0, 3, 1, 2).contiguous()  # back to [B,C,H,W]
 
-        return quantized, loss, encoding_indices
+        return quantized, vq_loss, encoding_indices
 
 
 class Encoder(nn.Module):
