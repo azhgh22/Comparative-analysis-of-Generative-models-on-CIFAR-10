@@ -97,9 +97,9 @@ class ScoreNet(nn.Module):
         self.conv_out = nn.Conv2d(channels, in_channels, 3, padding=1)
 
         # Initialize final conv layer to near zero to start as identity
-        self.score_net.conv_out.weight.data.normal_(0, 1e-10)  # Almost zero
-        if self.score_net.conv_out.bias is not None:
-            self.score_net.conv_out.bias.data.zero_()
+        self.conv_out.weight.data.normal_(0, 1e-10)
+        if self.conv_out.bias is not None:
+            self.conv_out.bias.data.zero_()
 
     def forward(self, x, sigma):
         """
