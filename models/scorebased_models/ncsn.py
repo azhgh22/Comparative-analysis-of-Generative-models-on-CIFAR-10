@@ -8,7 +8,7 @@ from base.base_model import BaseModel
 from utils.get_device import get_device
 
 
-class ConditionalInstanceNorm2d(nn.Module):
+class ConditionalBatchNorm2d(nn.Module):
     """
     Conditional Instance Normalization
     Normalizes the input and then applies a scale and shift computed from the noise level sigma.
@@ -17,21 +17,19 @@ class ConditionalInstanceNorm2d(nn.Module):
     def __init__(self, num_features, num_classes):
         super().__init__()
         self.num_features = num_features
-        self.inst_norm = nn.InstanceNorm2d(num_features, affine=False, track_running_stats=False)
+        self.batch_norm = nn.BatchNorm2d(num_features, affine=False, track_running_stats=False)
 
         # Embed the noise level index/value into scale (gamma) and shift (beta)
         # The paper typically maps embedding -> 2 * num_features
         self.embed = nn.Linear(num_classes, num_features * 2)
 
-        # Initialize weights to effectively perform identity at start
-        self.embed.weight.data[:, :num_features].normal_(1, 0.02)  # Initial scale ~1
-        self.embed.weight.data[:, num_features:].zero_()  # Initial shift 0
+        # Weight initialization is handled by init_weights() function
 
     def forward(self, x, sigma_emb):
         # x: (B, C, H, W)
         # sigma_emb: (B, embed_dim)
 
-        out = self.inst_norm(x)
+        out = self.batch_norm(x)
 
         # Get gamma and beta for the current noise level
         style = self.embed(sigma_emb)  # (B, 2*C)
@@ -47,9 +45,9 @@ class CondRefineBlock(nn.Module):
 
     def __init__(self, in_channels, out_channels, dilation=1, num_classes=10):
         super().__init__()
-        self.norm1 = ConditionalInstanceNorm2d(in_channels, num_classes)
+        self.norm1 = ConditionalBatchNorm2d(in_channels, num_classes)
         self.conv1 = nn.Conv2d(in_channels, out_channels, 3, padding=dilation, dilation=dilation)
-        self.norm2 = ConditionalInstanceNorm2d(out_channels, num_classes)
+        self.norm2 = ConditionalBatchNorm2d(out_channels, num_classes)
         self.conv2 = nn.Conv2d(out_channels, out_channels, 3, padding=dilation, dilation=dilation)
 
         self.activation = nn.ELU()  # Paper uses ELU
@@ -93,7 +91,7 @@ class ScoreNet(nn.Module):
         self.up_block1 = CondRefineBlock(2 * channels, channels, num_classes=self.embed_dim)
         self.up_block2 = CondRefineBlock(channels, channels, num_classes=self.embed_dim)
 
-        self.norm_out = ConditionalInstanceNorm2d(channels, self.embed_dim)
+        self.norm_out = ConditionalBatchNorm2d(channels, self.embed_dim)
         self.conv_out = nn.Conv2d(channels, in_channels, 3, padding=1)
 
         # Initialize final conv layer to near zero to start as identity
@@ -101,7 +99,7 @@ class ScoreNet(nn.Module):
         if self.conv_out.bias is not None:
             self.conv_out.bias.data.zero_()
 
-    def forward(self, x, sigma):
+    def forward(self, x, sigma, sigma_idx=None):
         """
         Args:
             x: Input image batch (B, C, H, W)
@@ -110,6 +108,9 @@ class ScoreNet(nn.Module):
         Returns:
             score: Predicted score (gradient of log density) (B, C, H, W)
         """
+        # if sigma_idx is None:
+        #     sigma_emb = self.noise_level_embed(torch.log(sigma))
+
         # Embed noise level
         if sigma.dim() == 1:
             sigma = sigma.view(-1, 1)
@@ -128,12 +129,19 @@ class ScoreNet(nn.Module):
 
         # 4. Decoder (with upsampling)
         # Upsample h_mid
+        # decoder stage 1
         h_up1 = F.interpolate(h_mid, scale_factor=2, mode='nearest')
-        # Add skip connection (simple addition or concat, paper typically adds in RefineNet)
-        h_up1 = self.up_block1(h_up1 + h2, sigma_emb)
+        h_up1 = (
+                h_up1
+                + h2
+                + F.interpolate(h3, scale_factor=2, mode="nearest")
+        )
+        h_up1 = self.up_block1(h_up1, sigma_emb)
 
+        # decoder stage 2
         h_up2 = F.interpolate(h_up1, scale_factor=2, mode='nearest')
-        h_up2 = self.up_block2(h_up2 + h1, sigma_emb)
+        h_up2 = h_up2 + h1
+        h_up2 = self.up_block2(h_up2, sigma_emb)
 
         # 5. Output
         out = self.norm_out(h_up2, sigma_emb)
@@ -157,10 +165,12 @@ class NCSN(BaseModel):
                  lr: float = None,
                  sigma_min: float = None,
                  sigma_max: float = None,
-                 device: str = None):
+                 device: str = None,
+                 use_simple_loss: bool = False):
         super(NCSN, self).__init__()
 
         self.device = device if device is not None else get_device()
+        self.use_simple_loss = use_simple_loss  # Flag for simpler loss formulation
 
         # Load config from file if config dict not provided
         if config is None:
@@ -229,13 +239,20 @@ class NCSN(BaseModel):
 
         # 3. Predict Score
         # We pass sigmas.view(-1) to the network embedding
-        target = -noise / sigmas  # Score of Gaussian is -(x - mu) / sigma^2
-        score = self.score_net(perturbed_x, sigmas.view(-1))
+        # CRITICAL FIX: Score of Gaussian p(x_t|x_0) is -noise / sigma^2, not -noise / sigma
+        target = -noise / sigmas
+        score = self.score_net(perturbed_x, sigmas.view(-1), sigma_idx=indices)
 
         # 4. Weighted Loss
-        # Loss weighting: sigma^2
-        loss = 0.5 * ((score - target) ** 2).sum(dim=(1, 2, 3)) * (sigmas.squeeze() ** 2)
-        return loss.mean()
+        if self.use_simple_loss:
+            # Simpler loss for debugging: unweighted MSE
+            loss = ((score - target) ** 2).mean()
+        else:
+            # Standard NCSN loss: L = (1/2) * sigma^2 * ||score - target||^2
+            loss = 0.5 * ((score - target) ** 2).sum(dim=(1, 2, 3)) * (sigmas.squeeze() ** 2)
+            loss = loss.mean()
+
+        return loss, indices
 
     def train_step(self, x, epoch):
         """
@@ -252,10 +269,14 @@ class NCSN(BaseModel):
         self.optimizer.zero_grad()
 
         # Compute loss
-        loss = self.compute_loss(x)
+        loss, indices = self.compute_loss(x)
 
         # Backward pass
         loss.backward()
+
+        # Gradient clipping to prevent exploding gradients
+        torch.nn.utils.clip_grad_norm_(self.score_net.parameters(), max_norm=1.0)
+
         self.optimizer.step()
 
         return {'total_loss': loss.item()}
@@ -358,22 +379,26 @@ def init_weights(m):
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
 
-    elif isinstance(m, ConditionalInstanceNorm2d):
-        # 3. Conditional Instance Norm Embeddings (CRITICAL STEP)
+    elif isinstance(m, ConditionalBatchNorm2d):
+        # 3. Conditional Batch Norm Embeddings (CRITICAL STEP)
         # The embedding outputs parameters [gamma, beta] for normalization.
         # We want the initial state to be: gamma ≈ 1, beta ≈ 0
         # This ensures the network starts as an Identity function regarding normalization.
-        print("Initializing ConditionalInstanceNorm2d embeddings...")
+        print("Initializing ConditionalBatchNorm2d embeddings...")
         num_features = m.num_features
 
-        # The weight shape is (2 * num_features, embed_dim)
-        # Initialize Gamma part (first half) to be close to 1
-        m.embed.weight.data[:num_features, :].normal_(1, 0.02)
+        # The embed layer is Linear(num_classes, num_features * 2)
+        # Weight shape: (num_features * 2, num_classes)
+        # Output is reshaped and split: first num_features -> gamma, last num_features -> beta
 
-        # Initialize Beta part (second half) to be 0
-        m.embed.weight.data[num_features:, :].zero_()
+        # Initialize the weight matrix
+        # For gamma part (first num_features rows): small values around 0
+        # For beta part (last num_features rows): small values around 0
+        nn.init.normal_(m.embed.weight.data, mean=0.0, std=0.02)
 
-        # Biases for the embedding layer
+        # Initialize biases to make gamma=1 and beta=0 at initialization
         if m.embed.bias is not None:
-            m.embed.bias.data[:num_features].fill_(1)  # Gamma bias = 1
-            m.embed.bias.data[num_features:].fill_(0)  # Beta bias = 0
+            # Gamma bias = 1 (first half of output)
+            m.embed.bias.data[:num_features].fill_(1.0)
+            # Beta bias = 0 (second half of output)
+            m.embed.bias.data[num_features:].fill_(0.0)
