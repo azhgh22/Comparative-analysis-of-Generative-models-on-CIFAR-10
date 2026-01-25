@@ -189,12 +189,13 @@ class NCSN(BaseModel):
         self.lr = lr if lr is not None else config.get('lr', 1e-4)
 
         # -- 1. Define Sigmas (Geometric Sequence) --
-        # Paper settings for CIFAR-10: sigma_max=50, sigma_min=0.01
-        sigmas_config = config.get('sigmas', [0.01, 50.0])
+        # For CIFAR-10 in [0,1] range: sigma_max=1.0 is more appropriate than 50
+        # Original paper used 50 but that was for data in different range
+        sigmas_config = config.get('sigmas', [0.01, 1.0])
         if sigma_min is None:
             sigma_min = sigmas_config[0] if isinstance(sigmas_config, list) else 0.01
         if sigma_max is None:
-            sigma_max = sigmas_config[-1] if isinstance(sigmas_config, list) else 50.0
+            sigma_max = sigmas_config[-1] if isinstance(sigmas_config, list) else 1.0
 
         # Create geometric progression of noise levels
         self.sigmas = torch.exp(torch.linspace(
@@ -221,38 +222,64 @@ class NCSN(BaseModel):
 
     def compute_loss(self, x):
         """
-        Compute denoising score matching loss
+        Compute denoising score matching loss for NCSN
+
+        Following the paper: "Generative Modeling by Estimating Gradients of the Data Distribution"
+        (https://arxiv.org/pdf/1907.05600)
+
+        Loss formula: L = (1/L) * Σ_i λ(σ_i) * E_x~p_data E_z~N(0,I) [||s_θ(x + σ_i*z, σ_i) + z/σ_i||²]
+
+        Where:
+        - σ_i are the noise levels from self.sigmas
+        - λ(σ_i) = σ_i² is the weighting factor (or can be 1 for simple loss)
+        - s_θ is the score network
+        - The target score for perturbed data is: -z/σ_i (gradient of Gaussian kernel)
 
         Args:
-            x: Clean data (B, C, H, W)
+            x: Clean data batch (B, C, H, W)
 
         Returns:
-            Loss value
+            loss: Scalar loss value
+            indices: Indices of sampled noise levels
         """
-        # 1. Sample random sigma indices for the batch
-        indices = torch.randint(0, self.num_scales, (x.size(0),), device=self.device)
-        sigmas = self.sigmas[indices].view(-1, 1, 1, 1)
+        batch_size = x.shape[0]
 
-        # 2. Perturb data
+        # 1. Randomly sample noise levels for each sample in the batch
+        # Uniform sampling from {0, 1, ..., num_scales-1}
+        indices = torch.randint(0, self.num_scales, (batch_size,), device=self.device)
+
+        # Get the corresponding sigma values: (B,)
+        sigmas = self.sigmas[indices]
+
+        # 2. Sample Gaussian noise
         noise = torch.randn_like(x)
-        perturbed_x = x + sigmas * noise
 
-        # 3. Predict Score
-        # We pass sigmas.view(-1) to the network embedding
-        # CRITICAL FIX: Score of Gaussian p(x_t|x_0) is -noise / sigma^2, not -noise / sigma
-        target = -noise / sigmas
-        score = self.score_net(perturbed_x, sigmas.view(-1), sigma_idx=indices)
+        # 3. Perturb the data: x̃ = x + σ * z
+        # Reshape sigma for broadcasting: (B, 1, 1, 1)
+        sigmas_expanded = sigmas.view(batch_size, 1, 1, 1)
+        perturbed_x = x + sigmas_expanded * noise
 
-        # 4. Weighted Loss
+        # 4. Predict the score: s_θ(x̃, σ)
+        predicted_score = self.score_net(perturbed_x, sigmas)
+
+        # 5. Compute target: The true score of the perturbed distribution p(x̃|x) = N(x, σ²I)
+        # is ∇_x̃ log p(x̃|x) = -(x̃ - x)/σ² = -z/σ
+        target_score = -noise / sigmas_expanded
+
+        # 6. Compute the loss
         if self.use_simple_loss:
-            # Simpler loss for debugging: unweighted MSE
-            loss = ((score - target) ** 2).mean()
+            # Simple formulation: L = ||s_θ(x̃, σ) - (-z/σ)||²
+            # This is equivalent to ||s_θ(x̃, σ) + z/σ||²
+            loss = torch.mean(torch.sum((predicted_score - target_score) ** 2, dim=[1, 2, 3]))
         else:
-            # Standard NCSN loss: L = (1/2) * sigma^2 * ||score - target||^2
-            loss = 0.5 * ((score - target) ** 2).sum(dim=(1, 2, 3)) * (sigmas.squeeze() ** 2)
-            loss = loss.mean()
+            # Weighted formulation from the paper: L = σ² * ||s_θ(x̃, σ) + z/σ||²
+            # The weighting σ² helps balance the contribution of different noise levels
+            # Equivalent to: L = ||σ * s_θ(x̃, σ) + z||²
+            weighted_error = sigmas_expanded * predicted_score + noise
+            loss = torch.mean(torch.sum(weighted_error ** 2, dim=[1, 2, 3]))
 
         return loss, indices
+
 
     def train_step(self, x, epoch):
         """
@@ -303,7 +330,7 @@ class NCSN(BaseModel):
             'epoch': epoch,
             'score_net_state_dict': self.score_net.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'sigmas': self.sigmas.cpu(),
+            'sigmas': self.sigmas.get_device(),
             'config': {
                 'channels': self.channels,
                 'num_scales': self.num_scales,
@@ -338,26 +365,31 @@ class NCSN(BaseModel):
         """
         self.score_net.eval()
 
-        # 1. Initialize with random noise
-        x = torch.rand(batch_size, self.in_channels, self.image_size, self.image_size).to(self.device)
+        # 1. Initialize with Gaussian noise
+        x = torch.randn(batch_size, self.in_channels, self.image_size, self.image_size).to(self.device)
 
         with torch.no_grad():
             for i, sigma in enumerate(self.sigmas):
                 sigma_val = sigma.item()
-                # Step size calculation from paper
-                alpha = eps * (sigma_val ** 2) / (self.sigmas[-1].item() ** 2)
+                # Step size calculation from paper: α_i = ε * (σ_i / σ_L)^2
+                # where σ_L is the smallest noise level
+                alpha = eps * (sigma_val / self.sigmas[-1].item()) ** 2
 
                 for t in range(n_steps):
-                    z = torch.randn_like(x) if t < n_steps - 1 else 0
+                    # Add noise except on the last step
+                    z = torch.randn_like(x) if t < n_steps - 1 else torch.zeros_like(x)
 
                     # Get score
                     sigma_input = torch.ones(batch_size, device=self.device) * sigma_val
-                    score = self.score_net(x, sigma_input)
+                    score = self(x, sigma_input)
 
-                    # Langevin step
-                    x = x + alpha / 2 * score + np.sqrt(alpha) * z
+                    # Langevin step: x_t+1 = x_t + (α/2) * s_θ(x_t, σ) + sqrt(α) * z
+                    x = x + (alpha / 2) * score + np.sqrt(alpha) * z
 
-        return x.clamp(0.0, 1.0)
+                    # Clamp during sampling to prevent explosion
+                    x = x.clamp(0.0, 1.0)
+
+        return x
 
 
 def init_weights(m):
@@ -367,14 +399,12 @@ def init_weights(m):
     if isinstance(m, nn.Conv2d):
         # 1. Convolutional Layers: Kaiming/He Normal
         # Standard for ReLU/ELU networks to maintain variance
-        print("Initializing Conv2d layer with Kaiming normal...")
         nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
 
     elif isinstance(m, nn.Linear):
         # 2. Linear Layers (Embeddings): Xavier/Glorot Uniform
-        print("Initializing Linear layer with Xavier uniform...")
         nn.init.xavier_uniform_(m.weight)
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
@@ -384,7 +414,6 @@ def init_weights(m):
         # The embedding outputs parameters [gamma, beta] for normalization.
         # We want the initial state to be: gamma ≈ 1, beta ≈ 0
         # This ensures the network starts as an Identity function regarding normalization.
-        print("Initializing ConditionalBatchNorm2d embeddings...")
         num_features = m.num_features
 
         # The embed layer is Linear(num_classes, num_features * 2)

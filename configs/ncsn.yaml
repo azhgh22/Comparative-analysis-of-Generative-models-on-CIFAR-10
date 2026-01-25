@@ -3,4 +3,4 @@ num_scales: 10
 epochs: 10
 lr: 1e-3
 batch_size: 128
-sigmas: [0.01, 50.0]
+sigmas: [0.01, 1.0]
