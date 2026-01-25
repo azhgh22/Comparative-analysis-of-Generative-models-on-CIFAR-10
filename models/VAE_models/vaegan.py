@@ -1,203 +1,193 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
 
-# ----------------------------
-# Residual Block
-# ----------------------------
-class ResBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, downsample=False, upsample=False):
-        super().__init__()
-        self.downsample = downsample
-        self.upsample = upsample
-
-        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, 1, 1)
-        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, 1, 1)
-        self.relu = nn.ReLU(inplace=True)
-        self.skip = nn.Conv2d(in_ch, out_ch, 1, 1, 0)
-
-        self.down = nn.AvgPool2d(2) if downsample else nn.Identity()
-        self.up = nn.Upsample(scale_factor=2, mode='nearest') if upsample else nn.Identity()
-
-    def forward(self, x):
-        identity = x
-        if self.upsample:
-            x = self.up(x)
-            identity = self.up(identity)
-        out = self.relu(self.conv1(x))
-        out = self.conv2(out)
-        identity = self.skip(identity)
-        out = out + identity
-        if self.downsample:
-            out = self.down(out)
-        out = self.relu(out)
-        return out
-
-# ----------------------------
-# Encoder
-# ----------------------------
+# --- Sub-networks (Required for VAEGAN) ---
 class Encoder(nn.Module):
-    def __init__(self, z_dim=128):
-        super().__init__()
-        self.conv1 = nn.Conv2d(3, 64, 3, 1, 1)
-        self.block1 = ResBlock(64, 128, downsample=True)
-        self.block2 = ResBlock(128, 256, downsample=True)
-        self.block3 = ResBlock(256, 512, downsample=True)
-        self.pool = nn.AdaptiveAvgPool2d(1)
-        self.fc_mu = nn.Linear(512, z_dim)
-        self.fc_logvar = nn.Linear(512, z_dim)
+    def __init__(self, latent_dim=128, channels=3):
+        super(Encoder, self).__init__()
+        self.latent_dim = latent_dim
+        self.conv_blocks = nn.Sequential(
+            nn.Conv2d(channels, 64, 4, 2, 1), nn.BatchNorm2d(64), nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(64, 128, 4, 2, 1), nn.BatchNorm2d(128), nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(128, 256, 4, 2, 1), nn.BatchNorm2d(256), nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.fc_mu = nn.Linear(256 * 4 * 4, latent_dim)
+        self.fc_logvar = nn.Linear(256 * 4 * 4, latent_dim)
 
-    def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = self.block1(x)
-        x = self.block2(x)
-        x = self.block3(x)
-        x = self.pool(x).view(x.size(0), -1)
-        mu = self.fc_mu(x)
-        logvar = self.fc_logvar(x)
-        return mu, logvar
-
-# ----------------------------
-# Decoder / Generator
-# ----------------------------
-class Decoder(nn.Module):
-    def __init__(self, z_dim=128):
-        super().__init__()
-        self.fc = nn.Linear(z_dim, 512*4*4)
-        self.block1 = ResBlock(512, 256, upsample=True)
-        self.block2 = ResBlock(256, 128, upsample=True)
-        self.block3 = ResBlock(128, 64, upsample=True)
-        self.conv_out = nn.Conv2d(64, 3, 3, 1, 1)
-        self.tanh = nn.Tanh()
-
-    def forward(self, z):
-        x = self.fc(z).view(z.size(0), 512, 4, 4)
-        x = self.block1(x)
-        x = self.block2(x)
-        x = self.block3(x)
-        x = self.conv_out(x)
-        x = self.tanh(x)
-        return x
-
-# ----------------------------
-# Discriminator
-# ----------------------------
-class Discriminator(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.conv1 = nn.Conv2d(3, 64, 3, 1, 1)
-        self.block1 = ResBlock(64, 128, downsample=True)
-        self.block2 = ResBlock(128, 256, downsample=True)
-        self.block3 = ResBlock(256, 512, downsample=True)
-        self.pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Linear(512,1)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x, feature_layer=False):
-        x = F.leaky_relu(self.conv1(x), 0.2)
-        x = self.block1(x)
-        feat = self.block2(x)  # intermediate features
-        x = self.block3(feat)
-        x = self.pool(x).view(x.size(0), -1)
-        out = self.sigmoid(self.fc(x))
-        if feature_layer:
-            return feat
-        return out
-
-# ----------------------------
-# VAE-GAN wrapper (3 losses)
-# ----------------------------
-class VAEGAN(nn.Module):
-    def __init__(self, encoder, decoder, discriminator, z_dim=128, gamma=1.0, device='cuda'):
-        super().__init__()
-        self.encoder = encoder
-        self.decoder = decoder
-        self.discriminator = discriminator
-        self.device = device
-        self.z_dim = z_dim
-        self.gamma = gamma
-
-        # Optimizers
-        self.optimizer_enc = optim.Adam(self.encoder.parameters(), lr=2e-4, betas=(0.5,0.999))
-        self.optimizer_dec = optim.Adam(self.decoder.parameters(), lr=2e-4, betas=(0.5,0.999))
-        self.optimizer_dis = optim.Adam(self.discriminator.parameters(), lr=2e-4, betas=(0.5,0.999))
-
-    # ----------------------------
-    # Reparameterization trick
-    # ----------------------------
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         return mu + eps * std
 
-    # ----------------------------
-    # Losses
-    # ----------------------------
-    def compute_Lprior(self, mu, logvar):
-        return -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / mu.size(0)
+    def forward(self, x):
+        x = self.conv_blocks(x)
+        x = x.view(x.size(0), -1)
+        return self.reparameterize(self.fc_mu(x), self.fc_logvar(x)), self.fc_mu(x), self.fc_logvar(x)
 
-    def compute_LDis_llike(self, x_real, x_fake):
-        with torch.no_grad():
-            feat_real = self.discriminator(x_real, feature_layer=True)
-        feat_fake = self.discriminator(x_fake, feature_layer=True)
-        return F.mse_loss(feat_fake, feat_real)
+class Decoder(nn.Module):
+    def __init__(self, latent_dim=128, channels=3):
+        super(Decoder, self).__init__()
+        self.fc = nn.Linear(latent_dim, 256 * 4 * 4)
+        self.conv_blocks = nn.Sequential(
+            nn.BatchNorm2d(256),
+            nn.ConvTranspose2d(256, 128, 4, 2, 1), nn.BatchNorm2d(128), nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(128, 64, 4, 2, 1), nn.BatchNorm2d(64), nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(64, channels, 4, 2, 1), nn.Tanh()
+        )
 
-    def compute_LGAN(self, x_real, x_fake, x_prior):
-        d_real = self.discriminator(x_real)
-        d_fake = self.discriminator(x_fake)
-        d_prior = self.discriminator(x_prior)
-        return -torch.mean(torch.log(d_real + 1e-8) +
-                           torch.log(1 - d_fake + 1e-8) +
-                           torch.log(1 - d_prior + 1e-8))
+    def forward(self, z):
+        out = self.fc(z).view(z.shape[0], 256, 4, 4)
+        return self.conv_blocks(out)
 
-    # ----------------------------
-    # Train step (Algorithm 1 style)
-    # ----------------------------
+class Discriminator(nn.Module):
+    def __init__(self, channels=3):
+        super(Discriminator, self).__init__()
+        self.blocks = nn.ModuleList([
+            nn.Sequential(nn.Conv2d(channels, 32, 4, 2, 1), nn.LeakyReLU(0.2, inplace=True)),
+            nn.Sequential(nn.Conv2d(32, 128, 4, 2, 1), nn.BatchNorm2d(128), nn.LeakyReLU(0.2, inplace=True)),
+            nn.Sequential(nn.Conv2d(128, 256, 4, 2, 1), nn.BatchNorm2d(256), nn.LeakyReLU(0.2, inplace=True))
+        ])
+        self.adv_layer = nn.Sequential(nn.Linear(256 * 4 * 4, 1), nn.Sigmoid())
+
+    def forward(self, img):
+        out = img
+        for block in self.blocks:
+            out = block(out)
+        features = out.view(out.shape[0], -1)
+        validity = self.adv_layer(features)
+        return validity, features
+
+# --- Main VAEGAN Class ---
+class VAEGAN(nn.Module):
+    def __init__(self, latent_dim=128, channels=3, gamma=1e-6, lr=0.0003):
+        super(VAEGAN, self).__init__()
+        self.latent_dim = latent_dim
+        self.gamma = gamma
+        
+        # Submodules
+        self.encoder = Encoder(latent_dim, channels)
+        self.decoder = Decoder(latent_dim, channels)
+        self.discriminator = Discriminator(channels)
+        
+        # Optimizers initialized directly in constructor
+        # Note: Discriminator often benefits from a lower LR in VAE-GANs
+        self.opt_enc = torch.optim.RMSprop(self.encoder.parameters(), lr=lr)
+        self.opt_dec = torch.optim.RMSprop(self.decoder.parameters(), lr=lr)
+        self.opt_dis = torch.optim.RMSprop(self.discriminator.parameters(), lr=lr * 0.1)
+
+    def forward(self, x):
+        """Standard VAE forward pass for inference."""
+        z, mu, logvar = self.encoder(x)
+        recon_x = self.decoder(z)
+        return recon_x, mu, logvar
+
     def train_step(self, x, epoch=None):
-        x = x.to(self.device)
+        """
+        Performs a single VAE-GAN training step with sequential updates.
+        FIXED: Detaches z for Decoder update to prevent inplace operation errors.
+        """
+        batch_size = x.size(0)
+        device = x.device
+        
+        # Labels
+        real_label = torch.ones(batch_size, 1).to(device)
+        fake_label = torch.zeros(batch_size, 1).to(device)
 
-        # Forward pass
-        mu, logvar = self.encoder(x)
-        z = self.reparameterize(mu, logvar)
-        x_tilde = self.decoder(z)
-        z_prior = torch.randn_like(z)
-        x_prior = self.decoder(z_prior)
+        # ---------------------
+        #  1. Train Discriminator
+        # ---------------------
+        self.opt_dis.zero_grad()
+        
+        # Real
+        real_validity, _ = self.discriminator(x)
+        d_real_loss = F.binary_cross_entropy(real_validity, real_label)
+        
+        # Reconstruction (Detach to stop gradients to Encoder/Decoder)
+        with torch.no_grad():
+            z, _, _ = self.encoder(x)
+            recon_imgs = self.decoder(z)
+        
+        recon_validity, _ = self.discriminator(recon_imgs.detach())
+        d_recon_loss = F.binary_cross_entropy(recon_validity, fake_label)
+        
+        # Random Sampling
+        z_p = torch.randn(batch_size, self.latent_dim).to(device)
+        gen_imgs = self.decoder(z_p)
+        gen_validity, _ = self.discriminator(gen_imgs.detach())
+        d_gen_loss = F.binary_cross_entropy(gen_validity, fake_label)
+        
+        d_loss = d_real_loss + d_recon_loss + d_gen_loss
+        d_loss.backward()
+        self.opt_dis.step()
 
-        # 3 losses exactly like paper
-        Lprior = self.compute_Lprior(mu, logvar)
-        LDis_llike = self.compute_LDis_llike(x, x_tilde)
-        LGAN = self.compute_LGAN(x, x_tilde, x_prior)
+        # ---------------------
+        #  2. Train Encoder
+        # ---------------------
+        self.opt_enc.zero_grad()
+        
+        # Forward pass for Encoder
+        z, mu, logvar = self.encoder(x)
+        recon_imgs = self.decoder(z)
+        
+        # Feature Matching Loss
+        # We use features from the Discriminator (frozen)
+        with torch.no_grad():
+            _, real_feats = self.discriminator(x)
+            
+        _, recon_feats = self.discriminator(recon_imgs)
+        
+        feature_loss = F.mse_loss(recon_feats, real_feats.detach())
+        kld_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+        
+        enc_loss = kld_loss + feature_loss
+        
+        # We do NOT need retain_graph=True anymore because we will not reuse this graph
+        enc_loss.backward()
+        self.opt_enc.step()
 
-        # --------------------
-        # Update discriminator
-        # --------------------
-        self.optimizer_dis.zero_grad()
-        LGAN.backward(retain_graph=True)  # only discriminator sees this gradient
-        self.optimizer_dis.step()
-
-        # --------------------
-        # Update encoder
-        # --------------------
-        self.optimizer_enc.zero_grad()
-        (Lprior + LDis_llike).backward(retain_graph=True)
-        self.optimizer_enc.step()
-
-        # --------------------
-        # Update decoder
-        # --------------------
-        self.optimizer_dec.zero_grad()
-        (self.gamma * LDis_llike - LGAN).backward()
-        self.optimizer_dec.step()
+        # ---------------------
+        #  3. Train Decoder
+        # ---------------------
+        self.opt_dec.zero_grad()
+        
+        # Fresh forward pass for Decoder
+        # CRITICAL FIX: We use .detach() on z. 
+        # The Decoder update should NOT backprop to the Encoder.
+        with torch.no_grad():
+            z, _, _ = self.encoder(x)
+        z = z.detach() 
+        
+        recon_imgs = self.decoder(z)
+        
+        # We need to re-calculate feature loss for the Decoder's graph
+        # (It's cheap and prevents the graph error)
+        with torch.no_grad():
+            _, real_feats = self.discriminator(x)
+        _, recon_feats = self.discriminator(recon_imgs)
+        
+        feature_loss_dec = F.mse_loss(recon_feats, real_feats.detach())
+        
+        # GAN Fooling Loss
+        recon_validity, _ = self.discriminator(recon_imgs)
+        g_loss = F.binary_cross_entropy(recon_validity, real_label)
+        
+        # Combined Decoder Loss
+        dec_loss = (self.gamma * feature_loss_dec) + g_loss
+        
+        dec_loss.backward()
+        self.opt_dec.step()
 
         return {
-            "total_loss": (Lprior + LDis_llike + LGAN).item(),
-            "recon_loss": LDis_llike.item(),
-            "kl_loss": Lprior.item(),
-            "gan_loss": LGAN.item()
+            "total_loss": dec_loss.item() + enc_loss.item() + d_loss.item(),
+            "recon_loss": feature_loss.item(),
+            "kld_loss": kld_loss.item(),
+            "gan_loss": g_loss.item(),
+            "disc_loss": d_loss.item()
         }
 
     # -------- Utilities --------
+
     def epoch_step(self):
         pass
 
@@ -205,8 +195,9 @@ class VAEGAN(nn.Module):
         return {
             "total_loss": 0.0,
             "recon_loss": 0.0,
-            "kl_loss": 0.0,
-            "gan_loss": 0.0
+            "kld_loss": 0.0,
+            "gan_loss": 0.0,
+            "disc_loss": 0.0
         }
 
     def get_model_state(self, epoch):
