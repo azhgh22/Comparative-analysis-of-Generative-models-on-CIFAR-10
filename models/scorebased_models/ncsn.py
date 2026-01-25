@@ -330,7 +330,7 @@ class NCSN(BaseModel):
             'epoch': epoch,
             'score_net_state_dict': self.score_net.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'sigmas': self.sigmas.get_device(),
+            'sigmas': self.sigmas,
             'config': {
                 'channels': self.channels,
                 'num_scales': self.num_scales,
