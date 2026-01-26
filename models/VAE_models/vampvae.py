@@ -146,7 +146,7 @@ class VampVae(nn.Module):
         # ----------------------------------
         # Reconstruction (Laplace likelihood → L1)
         # ----------------------------------
-        recon_loss = F.l1_loss(x_rec, x, reduction="none")
+        recon_loss = F.mse_loss(x_rec, x, reduction="none")
         recon_loss = recon_loss.view(x.size(0), -1).sum(dim=1).mean()
 
         # ----------------------------------
