@@ -145,6 +145,10 @@ class VAEGAN(nn.Module):
       self.decoder.eval()
       self.discriminator.eval()
 
+    def switch_mode(self,model, mode):
+        for param in model.parameters():
+            param.requires_grad = mode
+
     def train_step(self, x, epoch=None):
         # x = x.to(self.device)
         batch_size = x.size(0)
@@ -156,6 +160,10 @@ class VAEGAN(nn.Module):
         self.decoder.eval()
         self.discriminator.eval()  # freeze discriminator
 
+        self.switch_mode(self.encoder,True)
+        self.switch_mode(self.decoder,False)
+        self.switch_mode(self.discriminator,False)
+
         self.opt_enc.zero_grad()
 
         # Encode + reparameterization
@@ -164,10 +172,10 @@ class VAEGAN(nn.Module):
         z = mu + torch.exp(0.5 * logvar) * eps
 
         # Feature reconstruction loss (encoder sees decoder output)
-        with torch.no_grad():
-            recon = self.decoder(z)
-            real_feat = self.discriminator.get_features(x, self.discriminator.recon_depth)
-            recon_feat = self.discriminator.get_features(recon, self.discriminator.recon_depth)
+        # with torch.no_grad():
+        recon = self.decoder(z)
+        real_feat = self.discriminator.get_features(x, self.discriminator.recon_depth)
+        recon_feat = self.discriminator.get_features(recon, self.discriminator.recon_depth)
 
         # KL divergence
         kld = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1).mean()
@@ -175,7 +183,7 @@ class VAEGAN(nn.Module):
         feat_loss = F.mse_loss(recon_feat, real_feat)
 
         # Encoder loss
-        enc_loss = kld + feat_loss
+        enc_loss = 0.1*kld + feat_loss
         enc_loss.backward()
         self.opt_enc.step()
 
@@ -186,6 +194,11 @@ class VAEGAN(nn.Module):
         self.discriminator.train()
         self.decoder.eval()
         self.encoder.eval()
+
+        self.switch_mode(self.encoder,False)
+        self.switch_mode(self.decoder,False)
+        self.switch_mode(self.discriminator,True)
+
         self.opt_dis.zero_grad()
 
         # Real
@@ -215,31 +228,36 @@ class VAEGAN(nn.Module):
         self.encoder.eval()
         self.discriminator.eval()
         self.decoder.train()
+
+        self.switch_mode(self.encoder,False)
+        self.switch_mode(self.decoder,True)
+        self.switch_mode(self.discriminator,False)
+
         self.opt_dec.zero_grad()
 
         # Recompute decoder output (clean graph)
-        # mu, logvar = self.encoder(x)
+        mu, logvar = self.encoder(x)
         # eps = torch.randn_like(mu)
-        # z = mu + torch.exp(0.5 * logvar) * eps
+        z = mu + torch.exp(0.5 * logvar) * eps
         recon = self.decoder(z.detach())
 
         # Feature loss (decoder wants to match real features)
-        with torch.no_grad():
-            real_feat = self.discriminator.get_features(x, self.discriminator.recon_depth)
-            recon_feat = self.discriminator.get_features(recon, self.discriminator.recon_depth)
+        # with torch.no_grad():
+        real_feat = self.discriminator.get_features(x, self.discriminator.recon_depth)
+        recon_feat = self.discriminator.get_features(recon, self.discriminator.recon_depth)
         feat_loss_dec = F.mse_loss(recon_feat, real_feat)
 
         # GAN loss (decoder wants D(fake) ~ 1)
         # z_prior = torch.randn(batch_size, mu.size(1), device=self.device)
         fake_z = self.decoder(z_prior)
-        with torch.no_grad():
-            g_fake_z = self.discriminator(fake_z)
-            g_fake_rec = self.discriminator(recon)
+        # with torch.no_grad():
+        g_fake_z = self.discriminator(fake_z)
+        g_fake_rec = self.discriminator(recon)
 
         gan_loss = F.binary_cross_entropy(g_fake_z, torch.ones_like(g_fake_z)) + \
                   F.binary_cross_entropy(g_fake_rec, torch.ones_like(g_fake_rec))
 
-        dec_loss = self.gamma * feat_loss_dec + gan_loss
+        dec_loss = self.gamma * feat_loss_dec - gan_loss
         dec_loss.backward()
         self.opt_dec.step()
 
