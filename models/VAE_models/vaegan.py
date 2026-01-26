@@ -257,7 +257,7 @@ class VAEGAN(nn.Module):
         gan_loss = F.binary_cross_entropy(g_fake_z, torch.ones_like(g_fake_z)) + \
                   F.binary_cross_entropy(g_fake_rec, torch.ones_like(g_fake_rec))
 
-        dec_loss = self.gamma * feat_loss_dec - gan_loss
+        dec_loss = self.gamma * feat_loss_dec + gan_loss
         dec_loss.backward()
         self.opt_dec.step()
 
