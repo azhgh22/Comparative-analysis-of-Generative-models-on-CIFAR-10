@@ -135,123 +135,121 @@ class VAEGAN(nn.Module):
         recon = self.decoder(z)
         return recon
 
+    def train(self):
+      self.encoder.train()
+      self.decoder.train()
+      self.discriminator.train()
+    
+    def eval(self):
+      self.encoder.eval()
+      self.decoder.eval()
+      self.discriminator.eval()
+
     def train_step(self, x, epoch=None):
-        x = x.to(self.device)
+        # x = x.to(self.device)
         batch_size = x.size(0)
 
         # ============================================================
         # 1) ENCODER UPDATE: KL + FEATURE LOSS
         # ============================================================
         self.encoder.train()
-        self.decoder.train()
-        self.discriminator.eval()
+        self.decoder.eval()
+        self.discriminator.eval()  # freeze discriminator
 
         self.opt_enc.zero_grad()
 
-        # Encode
+        # Encode + reparameterization
         mu, logvar = self.encoder(x)
         eps = torch.randn_like(mu)
         z = mu + torch.exp(0.5 * logvar) * eps
-        recon = self.decoder(z)
 
-        # KL (batchwise mean)
-        kld = -0.5 * torch.sum(
-            1 + logvar - mu.pow(2) - logvar.exp(),
-            dim=1
-        ).mean()
-
-        # Feature reconstruction loss
+        # Feature reconstruction loss (encoder sees decoder output)
         with torch.no_grad():
-            real_feat = self.discriminator.get_features(
-                x, self.discriminator.recon_depth
-            )
+            recon = self.decoder(z)
+            real_feat = self.discriminator.get_features(x, self.discriminator.recon_depth)
+            recon_feat = self.discriminator.get_features(recon, self.discriminator.recon_depth)
 
-        recon_feat = self.discriminator.get_features(
-            recon, self.discriminator.recon_depth
-        )
-
+        # KL divergence
+        kld = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1).mean()
+        
         feat_loss = F.mse_loss(recon_feat, real_feat)
 
+        # Encoder loss
         enc_loss = kld + feat_loss
         enc_loss.backward()
         self.opt_enc.step()
 
         # ============================================================
         # 2) DISCRIMINATOR UPDATE: maximize LGAN
-        #    -> minimize (-LGAN)
+        # LGAN = log(D(x)) + log(1-D(Dec(z))) + log(1-D(Dec(Enc(x))))
         # ============================================================
         self.discriminator.train()
+        self.decoder.eval()
+        self.encoder.eval()
         self.opt_dis.zero_grad()
 
         # Real
         d_real = self.discriminator(x)
+        loss_real = F.binary_cross_entropy(d_real, torch.ones_like(d_real))
 
         # Fake from prior
-        z_prior = torch.randn(batch_size, mu.size(1), device=self.device)
-        fake_z = self.decoder(z_prior).detach()
+        with torch.no_grad():
+            z_prior = torch.randn(batch_size, mu.size(1), device=self.device)
+            fake_z = self.decoder(z_prior).detach()
+        
+        d_fake_z = self.discriminator(fake_z)
+        loss_fake_z = F.binary_cross_entropy(d_fake_z, torch.zeros_like(d_fake_z))
 
         # Fake from autoencoder
         fake_rec = recon.detach()
-
-        d_fake_z = self.discriminator(fake_z)
         d_fake_rec = self.discriminator(fake_rec)
+        loss_fake_rec = F.binary_cross_entropy(d_fake_rec, torch.zeros_like(d_fake_rec))
 
-        d_loss = (
-            F.binary_cross_entropy(d_real, torch.ones_like(d_real)) +
-            F.binary_cross_entropy(d_fake_z, torch.zeros_like(d_fake_z)) +
-            F.binary_cross_entropy(d_fake_rec, torch.zeros_like(d_fake_rec))
-        )
-
+        d_loss = loss_real + loss_fake_z + loss_fake_rec
         d_loss.backward()
         self.opt_dis.step()
 
         # ============================================================
-        # 3) DECODER UPDATE: γ * FEATURE − LGAN (fake terms only)
+        # 3) DECODER UPDATE: γ * FEATURE LOSS − LGAN
         # ============================================================
+        self.encoder.eval()
         self.discriminator.eval()
+        self.decoder.train()
         self.opt_dec.zero_grad()
 
-        # Recompute recon so graph is clean
-        mu, logvar = self.encoder(x)
-        eps = torch.randn_like(mu)
-        z = mu + torch.exp(0.5 * logvar) * eps
-        recon = self.decoder(z)
+        # Recompute decoder output (clean graph)
+        # mu, logvar = self.encoder(x)
+        # eps = torch.randn_like(mu)
+        # z = mu + torch.exp(0.5 * logvar) * eps
+        recon = self.decoder(z.detach())
 
-        # Feature loss (decoder side)
+        # Feature loss (decoder wants to match real features)
         with torch.no_grad():
-            real_feat = self.discriminator.get_features(
-                x, self.discriminator.recon_depth
-            )
-
-        recon_feat = self.discriminator.get_features(
-            recon, self.discriminator.recon_depth
-        )
-
+            real_feat = self.discriminator.get_features(x, self.discriminator.recon_depth)
+            recon_feat = self.discriminator.get_features(recon, self.discriminator.recon_depth)
         feat_loss_dec = F.mse_loss(recon_feat, real_feat)
 
-        # GAN loss (decoder wants discriminator to say REAL)
-        z_prior = torch.randn(batch_size, mu.size(1), device=self.device)
+        # GAN loss (decoder wants D(fake) ~ 1)
+        # z_prior = torch.randn(batch_size, mu.size(1), device=self.device)
         fake_z = self.decoder(z_prior)
+        with torch.no_grad():
+            g_fake_z = self.discriminator(fake_z)
+            g_fake_rec = self.discriminator(recon)
 
-        g_fake_z = self.discriminator(fake_z)
-        g_fake_rec = self.discriminator(recon)
-
-        gan_loss = (
-            F.binary_cross_entropy(g_fake_z, torch.ones_like(g_fake_z)) +
-            F.binary_cross_entropy(g_fake_rec, torch.ones_like(g_fake_rec))
-        )
+        gan_loss = F.binary_cross_entropy(g_fake_z, torch.ones_like(g_fake_z)) + \
+                  F.binary_cross_entropy(g_fake_rec, torch.ones_like(g_fake_rec))
 
         dec_loss = self.gamma * feat_loss_dec + gan_loss
         dec_loss.backward()
         self.opt_dec.step()
 
-        # ============================================================
         return {
             'kld': kld.item(),
             'recon': feat_loss.item(),
             'd_loss': d_loss.item(),
             'g_loss': gan_loss.item(),
         }
+
 
 
     def get_init_loss_dict(self):

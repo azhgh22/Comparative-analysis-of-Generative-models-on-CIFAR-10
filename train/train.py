@@ -23,6 +23,7 @@ class Train:
     self.current_epoch = 1
 
   def train(self,verbose=True):
+    self.model.train()
     for epoch in range(self.current_epoch, self.num_epochs+1):
       epoch_losses = self.model.get_init_loss_dict()
 
