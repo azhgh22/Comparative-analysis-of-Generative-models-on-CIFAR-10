@@ -143,21 +143,31 @@ class VampVae(nn.Module):
 
         x_rec, mu, logvar, z = self.forward(x)
 
-        recon_loss = F.binary_cross_entropy(x_rec, x, reduction="none")
+        # ----------------------------------
+        # Reconstruction (Laplace likelihood → L1)
+        # ----------------------------------
+        recon_loss = F.l1_loss(x_rec, x, reduction="none")
         recon_loss = recon_loss.view(x.size(0), -1).sum(dim=1).mean()
 
+        # ----------------------------------
+        # KL(q(z|x) || VampPrior)
+        # ----------------------------------
         log_qzx = self.log_normal(z, mu, logvar)
         log_pz = self.vamp_prior_logprob(z)
         kl = (log_qzx - log_pz).mean()
 
-        loss = recon_loss + kl
+        # ----------------------------------
+        # Total loss
+        # ----------------------------------
+        kl_weight = min(1.0, epoch / 20)
+        loss = recon_loss + kl_weight * kl
         loss.backward()
         self.optimizer.step()
 
         return {
-            "loss": loss.detach(),
-            "recon": recon_loss.detach(),
-            "kl": kl.detach()
+            "loss": loss.item(),
+            "recon": recon_loss.item(),
+            "kl": kl.item()
         }
 
     # --------------------------------------------------------
