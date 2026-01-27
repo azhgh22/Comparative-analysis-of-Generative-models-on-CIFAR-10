@@ -203,6 +203,10 @@ class VaeGan(nn.Module):
         x_hat = self.decoder(z)
         return x_hat, mu, logvar
 
+    def switch_mode(self, model, mode):
+      for p in model.parameters():
+        p.requires_grad_(mode)
+
     # -------------------------
     # Training step
     # -------------------------
@@ -224,7 +228,28 @@ class VaeGan(nn.Module):
         x_p = self.decoder(z_p)
 
         # =======================
-        # Train Discriminator
+        # Feature reconstruction loss (freeze D)
+        # =======================
+        for p in self.discriminator.parameters():
+            p.requires_grad_(False)
+
+        _, feat_real = self.discriminator(x, return_features=True)
+        _, feat_fake = self.discriminator(x_hat, return_features=True)
+
+        loss_rec = F.mse_loss(feat_fake, feat_real)
+
+        for p in self.discriminator.parameters():
+            p.requires_grad_(True)
+
+        # =======================
+        # KL loss
+        # =======================
+        loss_prior = -0.5 * torch.mean(
+            1 + logvar - mu.pow(2) - logvar.exp()
+        )
+
+        # =======================
+        # GAN loss
         # =======================
         prob_real = self.discriminator(x)
         prob_fake = self.discriminator(x_hat.detach())
@@ -236,55 +261,44 @@ class VaeGan(nn.Module):
             self.bce(prob_prior, zeros)
         )
 
-        self.opt_dis.zero_grad()
-        loss_dis.backward()
-        self.opt_dis.step()
+        # Generator GAN loss (no detach)
+        prob_fake_g = self.discriminator(x_hat)
+        prob_prior_g = self.discriminator(x_p)
+
+        loss_gan = self.bce(prob_fake_g, ones) + self.bce(prob_prior_g, ones)
 
         # =======================
-        # Train Encoder
+        # Total loss
         # =======================
-        prob_real, feat_real = self.discriminator(x, return_features=True)
-        prob_fake, feat_fake = self.discriminator(x_hat.detach(), return_features=True)
-
-        loss_rec = F.mse_loss(feat_fake, feat_real)
-
-        loss_prior = -0.5 * torch.mean(
-            1 + logvar - mu.pow(2) - logvar.exp()
+        loss_total = (
+            loss_dis +               # discriminator
+            loss_prior +             # encoder
+            self.gamma * loss_rec +  # encoder + decoder
+            loss_gan                 # decoder
         )
 
-        loss_enc = loss_rec + loss_prior
-
+        # =======================
+        # Backprop (single step)
+        # =======================
         self.opt_enc.zero_grad()
-        loss_enc.backward()
-        self.opt_enc.step()
-
-        # =======================
-        # Train Decoder
-        # =======================
-        prob_fake = self.discriminator(x_hat)
-        prob_prior = self.discriminator(x_p)
-
-        loss_gan = self.bce(prob_fake, ones) + self.bce(prob_prior, ones)
-
-        # recompute feature loss without detach
-        _, feat_real = self.discriminator(x, return_features=True)
-        _, feat_fake = self.discriminator(x_hat, return_features=True)
-        loss_rec_dec = F.mse_loss(feat_fake, feat_real)
-
-        loss_dec = self.gamma * loss_rec_dec + loss_gan
-
         self.opt_dec.zero_grad()
-        loss_dec.backward()
+        self.opt_dis.zero_grad()
+
+        loss_total.backward()
+
+        self.opt_enc.step()
         self.opt_dec.step()
+        self.opt_dis.step()
 
         return {
+            "loss_total": loss_total.item(),
             "loss_dis": loss_dis.item(),
-            "loss_enc": loss_enc.item(),
-            "loss_dec": loss_dec.item(),
             "loss_rec": loss_rec.item(),
             "loss_prior": loss_prior.item(),
             "loss_gan": loss_gan.item(),
         }
+
+
 
     # -------------------------
     # Sampling
@@ -301,9 +315,8 @@ class VaeGan(nn.Module):
     # -------------------------
     def get_init_loss_dict(self):
         return {
+            "loss_total": 0.0,
             "loss_dis": 0.0,
-            "loss_enc": 0.0,
-            "loss_dec": 0.0,
             "loss_rec": 0.0,
             "loss_prior": 0.0,
             "loss_gan": 0.0,
