@@ -8,6 +8,35 @@ from base.base_model import BaseModel
 from utils.get_device import get_device
 
 
+class ConditionalInstanceNorm2d(nn.Module):
+    """ Conditional Instance Normalization Normalizes the input and then applies a scale and shift computed from the noise level sigma. """
+    def __init__(self, num_features, num_classes):
+        super().__init__()
+        self.num_features = num_features
+        self.inst_norm = nn.InstanceNorm2d(num_features, affine=False, track_running_stats=False)
+
+        # Embed the noise level index/value into scale (gamma) and shift (beta)
+        # The paper typically maps embedding -> 2 * num_features
+        self.embed = nn.Linear(num_classes, num_features * 2)
+
+        # Initialize weights to effectively perform identity at start
+        self.embed.weight.data[:, :num_features].normal_(1, 0.02)
+        # Initial scale ~1
+        self.embed.weight.data[:, num_features:].zero_() # Initial shift 0
+
+    def forward(self, x, sigma_emb):
+        # x: (B, C, H, W)
+        # sigma_emb: (B, embed_dim)
+
+        out = self.inst_norm(x)
+
+        # Get gamma and beta for the current noise level
+        style = self.embed(sigma_emb) # (B, 2*C)
+        style = style.view(style.shape[0], 2 * self.num_features, 1, 1)
+        gamma, beta = style.chunk(2, dim=1)
+
+        return out * gamma + beta
+
 class ConditionalBatchNorm2d(nn.Module):
     """
     Conditional Instance Normalization
@@ -45,9 +74,9 @@ class CondRefineBlock(nn.Module):
 
     def __init__(self, in_channels, out_channels, dilation=1, num_classes=10):
         super().__init__()
-        self.norm1 = ConditionalBatchNorm2d(in_channels, num_classes)
+        self.norm1 = ConditionalInstanceNorm2d(in_channels, num_classes)
         self.conv1 = nn.Conv2d(in_channels, out_channels, 3, padding=dilation, dilation=dilation)
-        self.norm2 = ConditionalBatchNorm2d(out_channels, num_classes)
+        self.norm2 = ConditionalInstanceNorm2d(out_channels, num_classes)
         self.conv2 = nn.Conv2d(out_channels, out_channels, 3, padding=dilation, dilation=dilation)
 
         self.activation = nn.ELU()  # Paper uses ELU
@@ -63,6 +92,95 @@ class CondRefineBlock(nn.Module):
         h = self.activation(self.norm2(h, sigma_emb))
         h = self.conv2(h)
         return h + self.shortcut(x)
+
+
+class DoubleScoreNet(nn.Module):
+    def __init__(self, channels=128, num_scales=10, image_size=32, in_channels=3):
+        super().__init__()
+
+        self.embed_dim = 256
+        self.noise_level_embed = nn.Sequential(
+            nn.Linear(1, self.embed_dim),
+            nn.ELU(),
+            nn.Linear(self.embed_dim, self.embed_dim)
+        )
+
+        # Input conv
+        self.conv_in = nn.Conv2d(in_channels, channels, 3, padding=1)
+
+        # Encoder: 8 blocks (matching ncsn_erm structure)
+        # res1: 2 blocks at channels
+        self.block1a = CondRefineBlock(channels, channels, num_classes=self.embed_dim)
+        self.block1b = CondRefineBlock(channels, channels, num_classes=self.embed_dim)
+
+        # res2: 2 blocks, downsample to 2*channels
+        self.block2a = CondRefineBlock(channels, 2 * channels, num_classes=self.embed_dim)
+        self.block2b = CondRefineBlock(2 * channels, 2 * channels, num_classes=self.embed_dim)
+
+        # res3: 2 blocks with dilation=2
+        self.block3a = CondRefineBlock(2 * channels, 2 * channels, dilation=2, num_classes=self.embed_dim)
+        self.block3b = CondRefineBlock(2 * channels, 2 * channels, dilation=2, num_classes=self.embed_dim)
+
+        # res4: 2 blocks with dilation=4
+        self.block4a = CondRefineBlock(2 * channels, 2 * channels, dilation=4, num_classes=self.embed_dim)
+        self.block4b = CondRefineBlock(2 * channels, 2 * channels, dilation=4, num_classes=self.embed_dim)
+
+        # Decoder: 4 blocks (matching ncsn_erm refine blocks)
+        self.up_block1 = CondRefineBlock(2 * channels, 2 * channels, num_classes=self.embed_dim)
+        self.up_block2 = CondRefineBlock(2 * channels, 2 * channels, num_classes=self.embed_dim)
+        self.up_block3 = CondRefineBlock(2 * channels, channels, num_classes=self.embed_dim)
+        self.up_block4 = CondRefineBlock(channels, channels, num_classes=self.embed_dim)
+
+        self.norm_out = ConditionalInstanceNorm2d(channels, self.embed_dim)
+        self.conv_out = nn.Conv2d(channels, in_channels, 3, padding=1)
+
+        self.conv_out.weight.data.normal_(0, 1e-10)
+        if self.conv_out.bias is not None:
+            self.conv_out.bias.data.zero_()
+
+    def forward(self, x, sigma, sigma_idx=None):
+        if sigma.dim() == 1:
+            sigma = sigma.view(-1, 1)
+        sigma_emb = self.noise_level_embed(torch.log(sigma))
+
+        # Encoder
+        h = self.conv_in(x)
+
+        # res1 (no downsample)
+        layer1 = self.block1a(h, sigma_emb)
+        layer1 = self.block1b(layer1, sigma_emb)
+
+        # res2 (downsample)
+        layer2 = self.block2a(F.avg_pool2d(layer1, 2), sigma_emb)
+        layer2 = self.block2b(layer2, sigma_emb)
+
+        # res3 (downsample + dilation=2)
+        layer3 = self.block3a(F.avg_pool2d(layer2, 2), sigma_emb)
+        layer3 = self.block3b(layer3, sigma_emb)
+
+        # res4 (downsample + dilation=4)
+        layer4 = self.block4a(F.avg_pool2d(layer3, 2), sigma_emb)
+        layer4 = self.block4b(layer4, sigma_emb)
+
+        # Decoder with multi-input skip connections
+        ref1 = self.up_block1(layer4, sigma_emb)
+
+        ref2 = F.interpolate(ref1, size=layer3.shape[2:], mode='nearest') + layer3
+        ref2 = self.up_block2(ref2, sigma_emb)
+
+        ref3 = F.interpolate(ref2, size=layer2.shape[2:], mode='nearest') + layer2
+        ref3 = self.up_block3(ref3, sigma_emb)
+
+        ref4 = F.interpolate(ref3, size=layer1.shape[2:], mode='nearest') + layer1
+        output = self.up_block4(ref4, sigma_emb)
+
+        # Output
+        output = self.norm_out(output, sigma_emb)
+        output = F.elu(output)
+        output = self.conv_out(output)
+
+        return output
+
 
 class ScoreNet(nn.Module):
     def __init__(self, channels=128, num_scales=10, image_size=32, in_channels=3):
@@ -91,7 +209,7 @@ class ScoreNet(nn.Module):
         self.up_block1 = CondRefineBlock(2 * channels, channels, num_classes=self.embed_dim)
         self.up_block2 = CondRefineBlock(channels, channels, num_classes=self.embed_dim)
 
-        self.norm_out = ConditionalBatchNorm2d(channels, self.embed_dim)
+        self.norm_out = ConditionalInstanceNorm2d(channels, self.embed_dim)
         self.conv_out = nn.Conv2d(channels, in_channels, 3, padding=1)
 
         # Initialize final conv layer to near zero to start as identity
@@ -205,7 +323,7 @@ class NCSN(BaseModel):
         )).to(self.device)
 
         # Initialize score network
-        self.score_net = ScoreNet(self.channels, self.num_scales, self.image_size, self.in_channels)
+        self.score_net = DoubleScoreNet(self.channels, self.num_scales, self.image_size, self.in_channels)
 
         # initialize weights
         self.score_net.apply(init_weights)
@@ -409,7 +527,7 @@ def init_weights(m):
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
 
-    elif isinstance(m, ConditionalBatchNorm2d):
+    elif isinstance(m, ConditionalInstanceNorm2d):
         # 3. Conditional Batch Norm Embeddings (CRITICAL STEP)
         # The embedding outputs parameters [gamma, beta] for normalization.
         # We want the initial state to be: gamma ≈ 1, beta ≈ 0
