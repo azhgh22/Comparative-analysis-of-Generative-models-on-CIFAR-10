@@ -15,6 +15,20 @@ def compute_mmd(z, prior_z, sigma=1.0):
     return Kxx + Kyy - 2*Kxy
 
 
+def compute_mmd1(z, prior_z, sigmas=[1,2,4,8,16]):
+    def kernel(x, y, sigma):
+        x = x.unsqueeze(1)
+        y = y.unsqueeze(0)
+        return torch.exp(-((x - y)**2).sum(2) / (2*sigma**2))
+
+    mmd = 0
+    for s in sigmas:
+        Kxx = kernel(z,z,s).mean()
+        Kyy = kernel(prior_z,prior_z,s).mean()
+        Kxy = kernel(z,prior_z,s).mean()
+        mmd += Kxx + Kyy - 2*Kxy
+    return mmd
+
 # ---------- Encoder ----------
 class Encoder(nn.Module):
     def __init__(self, z_dim=128):
@@ -56,7 +70,7 @@ class Decoder(nn.Module):
 
 # ---------- MMD-VAE ----------
 class MMDVAE(nn.Module):
-    def __init__(self, z_dim=128, beta=10.0, lr=2e-4, device="cuda"):
+    def __init__(self, z_dim=128, beta=10.0, lr=2e-4, mmd_type=0, device="cuda"):
         super().__init__()
         self.encoder = Encoder(z_dim)
         self.decoder = Decoder(z_dim)
@@ -64,6 +78,7 @@ class MMDVAE(nn.Module):
         self.z_dim = z_dim
         self.beta = beta
         self.device = device
+        self.mmd_type = mmd_type
 
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         self.to(device)
@@ -83,7 +98,10 @@ class MMDVAE(nn.Module):
     def loss(self, x, x_hat, z):
         recon = F.mse_loss(x_hat, x, reduction='mean')
         prior_z = torch.randn_like(z)
-        mmd = compute_mmd(z, prior_z)
+        if not self.mmd_type:
+          mmd = compute_mmd(z, prior_z)
+        else:
+          mmd = compute_mmd1(z, prior_z)
         total = recon + self.beta * mmd
         return total, recon, mmd
 
