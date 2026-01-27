@@ -1,6 +1,6 @@
 channels: 128
 num_scales: 10
-epochs: 10
-lr: 1e-3
+epochs: 50
+lr: 0.00002
 batch_size: 128
 sigmas: [0.01, 1.0]
