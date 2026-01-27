@@ -1,6 +1,6 @@
 training:
   batch_size: 128
-  n_epochs: 50
+  n_epochs: 50000
   n_iters: 300001
   snapshot_freq: 5000
   snapshot_sampling: true

@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,6 +8,7 @@ import yaml
 from base.base_model import BaseModel
 from utils.get_device import get_device
 
+_DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'configs', 'ncsn.yaml')
 
 class ConditionalInstanceNorm2d(nn.Module):
     """ Conditional Instance Normalization Normalizes the input and then applies a scale and shift computed from the noise level sigma. """
@@ -275,7 +277,7 @@ class NCSN(BaseModel):
     """
     def __init__(self,
                  config=None,
-                 config_path='configs/ncsn.yaml',
+                 config_path=_DEFAULT_CONFIG_PATH,
                  channels: int = None,
                  num_scales: int = None,
                  image_size: int = 32,
@@ -295,6 +297,8 @@ class NCSN(BaseModel):
             try:
                 with open(config_path, 'r') as f:
                     config = yaml.safe_load(f)
+                print(f"Reading from config file {config_path}")
+                print(f"Configs:\n{config}")
             except FileNotFoundError:
                 print(f"Config file {config_path} not found. Using default parameters.")
                 config = {}
