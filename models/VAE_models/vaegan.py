@@ -170,11 +170,12 @@ class Discriminator(nn.Module):
         return prob
 
 class VaeGan(nn.Module):
-    def __init__(self, z_dim=128, lr=3e-4, gamma=1.0):
+    def __init__(self, z_dim=128, lr=3e-4, gamma=1.0, prior_weight=0.1):
         super().__init__()
 
         self.z_dim = z_dim
         self.gamma = gamma
+        self.prior_weight = prior_weight
 
         # Networks
         self.encoder = Encoder(z_dim)
@@ -244,7 +245,7 @@ class VaeGan(nn.Module):
         # =======================
         # KL loss
         # =======================
-        loss_prior = -0.5 * torch.mean(
+        loss_prior = self.prior_weight * -0.5 * torch.mean(
             1 + logvar - mu.pow(2) - logvar.exp()
         )
 
