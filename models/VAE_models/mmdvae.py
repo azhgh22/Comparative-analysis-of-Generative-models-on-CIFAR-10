@@ -137,7 +137,7 @@ class MMDVAE(nn.Module):
 
     # ---------- LOSS ----------
     def loss(self, x, x_hat, mu, logvar):
-        recon = F.mse_loss(x_hat, x, reduction='mean')
+        recon = F.mse_loss(x_hat, x, reduction='sum')/x.shape[0]
 
         prior_mu = torch.randn_like(mu)
         mmd = compute_mmd(mu, prior_mu)
