@@ -15,18 +15,26 @@ def compute_mmd(z, prior_z, sigma=1.0):
     return Kxx + Kyy - 2*Kxy
 
 
-def compute_mmd1(z, prior_z, sigmas=[1,2,4,8,16]):
+def compute_mmd1(mu, prior_mu, sigmas=[1,2,4,8,16]):
     def kernel(x, y, sigma):
         x = x.unsqueeze(1)
         y = y.unsqueeze(0)
-        return torch.exp(-((x - y)**2).sum(2) / (2*sigma**2))
+        return torch.exp(-((x - y) ** 2).sum(2) / (2 * sigma ** 2))
 
     mmd = 0
     for s in sigmas:
-        Kxx = kernel(z,z,s).mean()
-        Kyy = kernel(prior_z,prior_z,s).mean()
-        Kxy = kernel(z,prior_z,s).mean()
+        Kxx = kernel(mu, mu, s)
+        Kyy = kernel(prior_mu, prior_mu, s)
+        Kxy = kernel(mu, prior_mu, s)
+
+        # REMOVE diagonal (self-similarity)
+        n = mu.size(0)
+        Kxx = (Kxx.sum() - torch.diagonal(Kxx).sum()) / (n*(n-1))
+        Kyy = (Kyy.sum() - torch.diagonal(Kyy).sum()) / (n*(n-1))
+        Kxy = Kxy.mean()
+
         mmd += Kxx + Kyy - 2*Kxy
+
     return mmd
 
 # ---------- Encoder ----------
@@ -95,15 +103,16 @@ class MMDVAE(nn.Module):
         return x_hat, z, mu, logvar
 
     # ---------- LOSS ----------
-    def loss(self, x, x_hat, z):
+    def loss(self, x, x_hat, mu, logvar):
         recon = F.mse_loss(x_hat, x, reduction='mean')
-        prior_z = torch.randn_like(z)
-        if not self.mmd_type:
-          mmd = compute_mmd(z, prior_z)
-        else:
-          mmd = compute_mmd1(z, prior_z)
-        total = recon + self.beta * mmd
-        return total, recon, mmd
+
+        prior_mu = torch.randn_like(mu)
+        mmd = compute_mmd(mu, prior_mu)
+
+        kl = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+
+        total = recon + self.beta * mmd + 0.1 * kl
+        return total, recon, mmd, kl
 
     # ---------- TRAIN STEP ----------
     def train_step(self, x,epoch=None):
@@ -111,7 +120,7 @@ class MMDVAE(nn.Module):
         x = x.to(self.device)
 
         x_hat, z, mu, logvar = self.forward(x)
-        loss, recon, mmd = self.loss(x, x_hat, z)
+        loss, recon, mmd, kl = self.loss(x, x_hat, mu, logvar)
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -120,7 +129,8 @@ class MMDVAE(nn.Module):
         return {
             "loss": loss.item(),
             "recon": recon.item(),
-            "mmd": mmd.item()
+            "mmd": mmd.item(),
+            "kl" : kl.item()
         }
 
     # ---------- SAMPLE ----------
@@ -136,7 +146,8 @@ class MMDVAE(nn.Module):
         return {
             "loss": 0.0,
             "recon": 0.0,
-            "mmd": 0.0
+            "mmd": 0.0,
+            "kl": 0.0
         }
 
     def epoch_step(self):
