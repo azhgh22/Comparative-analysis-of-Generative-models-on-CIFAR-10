@@ -132,7 +132,7 @@ class UNetScoreNet(nn.Module):
 # ============================================================
 
 class NCSN(nn.Module):
-    def __init__(self, device="cuda"):
+    def __init__(self, lr=1e-3, device="cuda"):
         super().__init__()
 
         self.device = device
@@ -154,7 +154,7 @@ class NCSN(nn.Module):
         # optim settings
         self.optimizer = torch.optim.Adam(
             self.parameters(),
-            lr=1e-3,              # optim.lr
+            lr=lr,              # optim.lr
             betas=(0.9, 0.999),
             weight_decay=0.0
         )
