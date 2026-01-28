@@ -2,20 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# ---------- MMD Kernel ----------
-def compute_mmd(z, prior_z, sigma=1.0):
-    def kernel(x, y):
-        x = x.unsqueeze(1)
-        y = y.unsqueeze(0)
-        return torch.exp(-((x - y)**2).sum(2) / (2*sigma**2))
-
-    Kxx = kernel(z, z).mean()
-    Kyy = kernel(prior_z, prior_z).mean()
-    Kxy = kernel(z, prior_z).mean()
-    return Kxx + Kyy - 2*Kxy
-
-
-def compute_mmd1(mu, prior_mu, sigmas=[1,2,4,8,16]):
+def compute_mmd(mu, prior_mu, sigmas=[1,2,4,8,16]):
     def kernel(x, y, sigma):
         x = x.unsqueeze(1)
         y = y.unsqueeze(0)
@@ -37,43 +24,89 @@ def compute_mmd1(mu, prior_mu, sigmas=[1,2,4,8,16]):
 
     return mmd
 
+class ResBlock(nn.Module):
+    def __init__(self, in_ch, out_ch, downsample=False, upsample=False):
+        super().__init__()
+        self.downsample = downsample
+        self.upsample = upsample
+
+        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_ch)
+        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_ch)
+
+        if in_ch != out_ch:
+            self.skip = nn.Conv2d(in_ch, out_ch, 1)
+        else:
+            self.skip = nn.Identity()
+
+        if downsample:
+            self.pool = nn.AvgPool2d(2)
+        if upsample:
+            self.up = nn.Upsample(scale_factor=2, mode="nearest")
+
+    def forward(self, x):
+        h = x
+        if self.upsample:
+            h = self.up(h)
+            x = self.up(x)
+
+        h = self.conv1(h)
+        h = self.bn1(h)
+        h = F.relu(h)
+
+        h = self.conv2(h)
+        h = self.bn2(h)
+
+        if self.downsample:
+            h = self.pool(h)
+            x = self.pool(x)
+
+        return F.relu(h + self.skip(x))
+
+
+
 # ---------- Encoder ----------
 class Encoder(nn.Module):
     def __init__(self, z_dim=128):
         super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(3, 64, 4, 2, 1),
-            nn.ReLU(),
-            nn.Conv2d(64, 128, 4, 2, 1),
-            nn.ReLU(),
-            nn.Conv2d(128, 256, 4, 2, 1),
-            nn.ReLU()
-        )
-        self.fc_mu = nn.Linear(256*4*4, z_dim)
-        self.fc_logvar = nn.Linear(256*4*4, z_dim)
+        self.conv_in = nn.Conv2d(3, 64, 3, padding=1)
+
+        self.block1 = ResBlock(64, 128, downsample=True)
+        self.block2 = ResBlock(128, 256, downsample=True)
+        self.block3 = ResBlock(256, 512, downsample=True)
+
+        self.fc_mu = nn.Linear(512*4*4, z_dim)
+        self.fc_logvar = nn.Linear(512*4*4, z_dim)
 
     def forward(self, x):
-        h = self.conv(x).view(x.size(0), -1)
+        h = self.conv_in(x)
+        h = self.block1(h)   # 16x16
+        h = self.block2(h)   # 8x8
+        h = self.block3(h)   # 4x4
+        h = h.view(h.size(0), -1)
         return self.fc_mu(h), self.fc_logvar(h)
 
 
-# ---------- Decoder ----------
+
 class Decoder(nn.Module):
     def __init__(self, z_dim=128):
         super().__init__()
-        self.fc = nn.Linear(z_dim, 256*4*4)
-        self.deconv = nn.Sequential(
-            nn.ConvTranspose2d(256,128,4,2,1),
-            nn.ReLU(),
-            nn.ConvTranspose2d(128,64,4,2,1),
-            nn.ReLU(),
-            nn.ConvTranspose2d(64,3,4,2,1),
-            nn.Sigmoid()
-        )
+        self.fc = nn.Linear(z_dim, 512*4*4)
+
+        self.block1 = ResBlock(512, 256, upsample=True)
+        self.block2 = ResBlock(256, 128, upsample=True)
+        self.block3 = ResBlock(128, 64, upsample=True)
+
+        self.conv_out = nn.Conv2d(64, 3, 3, padding=1)
 
     def forward(self, z):
-        h = self.fc(z).view(z.size(0),256,4,4)
-        return self.deconv(h)
+        h = self.fc(z).view(z.size(0), 512, 4, 4)
+        h = self.block1(h)   # 8x8
+        h = self.block2(h)   # 16x16
+        h = self.block3(h)   # 32x32
+        return torch.sigmoid(self.conv_out(h))
+
 
 
 # ---------- MMD-VAE ----------
@@ -109,10 +142,10 @@ class MMDVAE(nn.Module):
         prior_mu = torch.randn_like(mu)
         mmd = compute_mmd(mu, prior_mu)
 
-        kl = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+        # kl = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
 
-        total = recon + self.beta * mmd + 0.1 * kl
-        return total, recon, mmd, kl
+        total = recon + self.beta * mmd #+ 0.1 * kl
+        return total, recon, mmd
 
     # ---------- TRAIN STEP ----------
     def train_step(self, x,epoch=None):
@@ -120,7 +153,7 @@ class MMDVAE(nn.Module):
         x = x.to(self.device)
 
         x_hat, z, mu, logvar = self.forward(x)
-        loss, recon, mmd, kl = self.loss(x, x_hat, mu, logvar)
+        loss, recon, mmd = self.loss(x, x_hat, mu, logvar)
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -130,7 +163,7 @@ class MMDVAE(nn.Module):
             "loss": loss.item(),
             "recon": recon.item(),
             "mmd": mmd.item(),
-            "kl" : kl.item()
+            # "kl" : kl.item()
         }
 
     # ---------- SAMPLE ----------
@@ -147,7 +180,7 @@ class MMDVAE(nn.Module):
             "loss": 0.0,
             "recon": 0.0,
             "mmd": 0.0,
-            "kl": 0.0
+            # "kl": 0.0
         }
 
     def epoch_step(self):
