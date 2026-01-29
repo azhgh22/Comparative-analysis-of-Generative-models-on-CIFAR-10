@@ -6,6 +6,7 @@
 import torch
 from torchmetrics.image.fid import FrechetInceptionDistance
 from torchmetrics.image.inception import InceptionScore
+import math
 
 def compute_fid(
     real_loader,
@@ -80,4 +81,70 @@ def compute_is(
     return is_mean.item(), is_std.item()
 
 
+def compute_mi(
+    model,
+    data_loader,
+    device,
+    num_batches=100
+):
+    """
+    Estimates I(X; Z) for a Gaussian VAE
+    Uses Monte Carlo approximation
+    """
 
+    model.eval()
+
+    log_qz_given_x = []
+    log_qz = []
+
+    with torch.no_grad():
+        for i, (x, _) in enumerate(data_loader):
+            if i >= num_batches:
+                break
+
+            x = x.to(device)
+
+            # Encode
+            _, z, mu, logvar = model(x)
+            # std = torch.exp(0.5 * logvar)
+
+            # # Sample z ~ q(z|x)
+            # eps = torch.randn_like(std)
+            # z = mu + eps * std
+
+            # log q(z|x)
+            log_qz_x = (
+                -0.5 * (
+                    math.log(2 * math.pi)
+                    + logvar
+                    + ((z - mu) ** 2) / torch.exp(logvar)
+                )
+            ).sum(dim=1)
+
+            log_qz_given_x.append(log_qz_x)
+
+            # Estimate log q(z)
+            # using minibatch aggregation trick
+            batch_size, z_dim = z.shape
+            mu_all = mu.unsqueeze(1)
+            logvar_all = logvar.unsqueeze(1)
+
+            z_all = z.unsqueeze(0)
+
+            log_qz_all = (
+                -0.5 * (
+                    math.log(2 * math.pi)
+                    + logvar_all
+                    + ((z_all - mu_all) ** 2) / torch.exp(logvar_all)
+                )
+            ).sum(dim=2)
+
+            # log-sum-exp over batch
+            log_qz_est = torch.logsumexp(log_qz_all, dim=1) - math.log(batch_size)
+            log_qz.append(log_qz_est)
+
+    log_qz_given_x = torch.cat(log_qz_given_x)
+    log_qz = torch.cat(log_qz)
+
+    mi = (log_qz_given_x - log_qz).mean()
+    return mi.item()
