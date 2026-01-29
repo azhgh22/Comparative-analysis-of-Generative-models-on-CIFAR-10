@@ -5,12 +5,13 @@
 
 import torch
 from torchmetrics.image.fid import FrechetInceptionDistance
+# from torchmetrics.image.fid import FID
 
 def compute_fid(
     real_loader,
     model,
     device,
-    num_gen=10_000
+    num_gen=10000
 ):
     """
     real_loader : DataLoader with real images (e.g. CIFAR-10 test)

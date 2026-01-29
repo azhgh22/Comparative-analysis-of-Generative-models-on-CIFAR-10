@@ -8,3 +8,4 @@ pyyaml
 torchview
 wandb
 torchmetrics
+torch-fidelity
