@@ -63,7 +63,7 @@ def data_transform(config, X):
 
 def inverse_data_transform(config, X):
     if hasattr(config, 'image_mean'):
-        X = X + config.image_mean.to(X.device)[None, ...]
+        X = X + config.image_mean.to(X.DEVICE)[None, ...]
 
     if config.data.logit_transform:
         X = torch.sigmoid(X)

@@ -170,7 +170,7 @@ class NCSN(nn.Module):
     # --------------------------------------------------------
     def loss(self, x):
         B = x.size(0)
-        device = x.device
+        device = x.DEVICE
 
         sigma = self.sigmas[
             torch.randint(0, len(self.sigmas), (B,), device=device)

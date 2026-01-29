@@ -2,7 +2,7 @@ import torch
 
 def anneal_dsm_score_estimation(scorenet, samples, sigmas, labels=None, anneal_power=2., hook=None):
     if labels is None:
-        labels = torch.randint(0, len(sigmas), (samples.shape[0],), device=samples.device)
+        labels = torch.randint(0, len(sigmas), (samples.shape[0],), device=samples.DEVICE)
     used_sigmas = sigmas[labels].view(samples.shape[0], *([1] * len(samples.shape[1:])))
     noise = torch.randn_like(samples) * used_sigmas
     perturbed_samples = samples + noise

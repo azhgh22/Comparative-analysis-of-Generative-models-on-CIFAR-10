@@ -1,11 +1,15 @@
 import torch
 import numpy as np
 
+from .ncsn import NCSN, ScoreNet, DoubleScoreNet
+from .sdedit import SDEdit
+from .sde_diffusion import SDEDiffusion, VESDE, VPSDE, subVPSDE, create_sde_diffusion
+
 def get_sigmas(config):
     if config.model.sigma_dist == 'geometric':
         sigmas = torch.tensor(
             np.exp(np.linspace(np.log(config.model.sigma_begin), np.log(config.model.sigma_end),
-                               config.model.num_classes))).float().to(config.device)
+                               config.model.num_classes))).float().to(config.DEVICE)
     else:
         raise NotImplementedError('sigma distribution not supported')
 
@@ -101,9 +105,9 @@ def anneal_Langevin_dynamics_interpolation(x_mod, scorenet, sigmas, n_interpolat
             grad = scorenet(x_mod, labels)
 
             noise_p = torch.randn(n_rows, x_mod.shape[1], x_mod.shape[2], x_mod.shape[3],
-                                  device=x_mod.device)
+                                  device=x_mod.DEVICE)
             noise_q = torch.randn(n_rows, x_mod.shape[1], x_mod.shape[2], x_mod.shape[3],
-                                  device=x_mod.device)
+                                  device=x_mod.DEVICE)
             angles = torch.linspace(0, np.pi / 2., n_interpolations, device=x_mod.device)
 
             noise = noise_p[:, None, ...] * torch.cos(angles)[None, :, None, None, None] + \

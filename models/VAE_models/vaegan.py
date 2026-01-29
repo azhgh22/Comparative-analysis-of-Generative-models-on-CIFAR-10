@@ -213,7 +213,7 @@ class VaeGan(nn.Module):
     # -------------------------
     def train_step(self, x, epoch=None):
         batch_size = x.size(0)
-        device = x.device
+        device = x.DEVICE
 
         ones = torch.ones(batch_size, 1, device=device)
         zeros = torch.zeros(batch_size, 1, device=device)

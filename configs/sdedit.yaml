@@ -1,0 +1,25 @@
+# SDEdit Configuration
+# Based on: https://arxiv.org/pdf/2108.01073
+
+# Score Network Architecture
+channels: 128
+num_scales: 10
+
+# Training Parameters
+epochs: 50
+lr: 0.001
+batch_size: 128
+
+# Noise Levels (geometric progression from sigma_max to sigma_min)
+sigmas: [0.01, 1.0]
+
+# SDEdit Specific Parameters
+# t0: Controls the trade-off between realism and faithfulness
+# - Higher t0 (closer to 1): More noise added, more realistic but less faithful to guide
+# - Lower t0 (closer to 0): Less noise added, more faithful but potentially less realistic
+# Recommended values: 0.3-0.7 depending on the application
+t0: 0.5
+
+# Sampling Parameters
+n_steps: 100  # Number of Langevin steps per noise level
+eps: 0.00002  # Base step size for Langevin dynamics

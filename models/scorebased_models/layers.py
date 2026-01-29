@@ -171,7 +171,7 @@ class MSFBlock(nn.Module):
             self.convs.append(conv3x3(in_planes[i], features, stride=1, bias=True, spec_norm=spec_norm))
 
     def forward(self, xs, shape):
-        sums = torch.zeros(xs[0].shape[0], self.features, *shape, device=xs[0].device)
+        sums = torch.zeros(xs[0].shape[0], self.features, *shape, device=xs[0].DEVICE)
         for i in range(len(self.convs)):
             h = self.convs[i](xs[i])
             h = F.interpolate(h, size=shape, mode='bilinear', align_corners=True)
@@ -197,7 +197,7 @@ class CondMSFBlock(nn.Module):
             self.norms.append(normalizer(in_planes[i], num_classes, bias=True))
 
     def forward(self, xs, y, shape):
-        sums = torch.zeros(xs[0].shape[0], self.features, *shape, device=xs[0].device)
+        sums = torch.zeros(xs[0].shape[0], self.features, *shape, device=xs[0].DEVICE)
         for i in range(len(self.convs)):
             h = self.norms[i](xs[i], y)
             h = self.convs[i](h)

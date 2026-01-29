@@ -1,0 +1,31 @@
+# SDE Diffusion Configuration
+# Based on: "Score-Based Generative Modeling through Stochastic Differential Equations"
+# Paper: https://arxiv.org/pdf/2011.13456
+# SDE Type: 'vesde' (Variance Exploding), 'vpsde' (Variance Preserving), 'subvpsde'
+sde_type: vpsde
+# Architecture Parameters
+channels: 128
+ch_mult: [1, 2, 2, 2]
+num_res_blocks: 2
+attn_resolutions: [16]
+dropout: 0.1
+# SDE Parameters
+# For VP-SDE (DDPM-style)
+beta_min: 0.1
+beta_max: 20.0
+# For VE-SDE (NCSN-style)
+sigma_min: 0.01
+sigma_max: 50.0
+# Number of discretization steps
+N: 1000
+# Training Parameters
+epochs: 100
+lr: 0.0002
+batch_size: 128
+ema_rate: 0.9999
+# Sampling Parameters
+predictor: euler_maruyama
+corrector: langevin
+snr: 0.16
+n_steps_corrector: 1
+probability_flow: false
