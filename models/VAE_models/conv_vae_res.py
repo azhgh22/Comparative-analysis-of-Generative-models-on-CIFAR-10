@@ -86,7 +86,7 @@ class Decoder(nn.Module):
         return torch.sigmoid(self.conv_out(h))
 
 
-class ConvVAE(nn.Module):
+class ConvVAERes(nn.Module):
     def __init__(self, z_dim=128):
         super().__init__()
 
