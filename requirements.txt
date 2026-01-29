@@ -5,3 +5,5 @@ torchvision
 matplotlib
 tqdm
 pyyaml
+torchview
+wandb
