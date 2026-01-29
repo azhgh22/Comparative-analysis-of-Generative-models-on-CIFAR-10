@@ -5,7 +5,7 @@
 
 import torch
 from torchmetrics.image.fid import FrechetInceptionDistance
-# from torchmetrics.image.fid import FID
+from torchmetrics.image.inception import InceptionScore
 
 def compute_fid(
     real_loader,
@@ -44,7 +44,7 @@ def compute_fid(
 
     with torch.no_grad():
         for _ in range(steps):
-            samples = model(batch_size).to(device)
+            samples = model.sample(batch_size).to(device)
 
             # If samples are in [-1, 1], uncomment:
             # samples = (samples + 1) / 2
@@ -53,3 +53,31 @@ def compute_fid(
             fid_metric.update(samples, real=False)
 
     return fid_metric.compute().item()
+
+
+def compute_is(
+    model,
+    device,
+    num_gen=10_000,
+    batch_size=128
+):
+    is_metric = InceptionScore(
+        splits=10,      # standard
+        normalize=True  # expects images in [0,1]
+    ).to(device)
+
+    with torch.no_grad():
+        for _ in range(num_gen // batch_size):
+            samples = model.sample(batch_size).to(device)
+
+            # If samples in [-1,1], uncomment:
+            # samples = (samples + 1) / 2
+
+            samples = samples.clamp(0, 1)
+            is_metric.update(samples)
+
+    is_mean, is_std = is_metric.compute()
+    return is_mean.item(), is_std.item()
+
+
+
