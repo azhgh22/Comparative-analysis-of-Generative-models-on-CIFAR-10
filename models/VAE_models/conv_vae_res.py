@@ -132,7 +132,9 @@ class ConvVAERes(nn.Module):
 
         # warmup_epochs = 20
         # beta = min(1.0, epoch / warmup_epochs)
-        beta = 0.1
+        # beta = 0.1
+        # beta=1.0
+        beta = 10.0
 
         # Loss with beta
         total_loss, recon_loss, kl_loss = self.vae_loss(recon_x, x, mu, logvar,beta)
