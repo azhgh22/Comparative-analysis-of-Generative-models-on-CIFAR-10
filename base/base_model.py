@@ -1,7 +1,4 @@
-import torch.nn as nn
-import numpy as np
-from abc import abstractmethod, ABC
-
+from base import *
 
 class BaseModel(nn.Module, ABC):
     """

@@ -12,12 +12,12 @@ dropout: 0.1
 # SDE Parameters
 # For VP-SDE (DDPM-style)
 beta_min: 0.1
-beta_max: 20.0
+beta_max: 1.0
 # For VE-SDE (NCSN-style)
 sigma_min: 0.01
-sigma_max: 50.0
+sigma_max: 1.0
 # Number of discretization steps
-N: 1000
+N: 10
 # Training Parameters
 epochs: 100
 lr: 0.0002

@@ -1,8 +1,4 @@
-import torch
-from abc import abstractmethod, ABC
-from numpy import inf
-# from logger import TensorboardWriter
-
+from base import *
 
 class BaseTrainer(ABC):
     """

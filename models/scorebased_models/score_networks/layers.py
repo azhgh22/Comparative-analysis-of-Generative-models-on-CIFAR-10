@@ -1,5 +1,5 @@
 import torch.nn.functional as F
-from .normalization import *
+from models.scorebased_models.score_networks.normalization import *
 from functools import partial
 
 

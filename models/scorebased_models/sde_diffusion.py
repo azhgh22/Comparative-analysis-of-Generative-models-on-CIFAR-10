@@ -21,174 +21,17 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import yaml
-from abc import ABC, abstractmethod
 
 from base.base_model import BaseModel
-from models.scorebased_models.diffusions import (
-    get_timestep_embedding, nonlinearity, Normalize,
-    Upsample, Downsample, ResnetBlock, AttnBlock
-)
+from base.predictor import Predictor
+from base.corrector import Corrector
+from base.sde import SDE
+
+from models.scorebased_models.ncsn import ScoreNet, DoubleScoreNet
+from models.scorebased_models.score_networks.score_net_sde import ScoreNetworkSDE
 from utils.get_device import get_device
 
 _DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'configs', 'sde_diffusion.yaml')
-
-
-# ============================================================================
-# SDE Abstract Base Class
-# ============================================================================
-
-class SDE(ABC):
-    """
-    Abstract base class for Stochastic Differential Equations.
-
-    Forward SDE: dx = f(x, t)dt + g(t)dw
-    where:
-        - f(x, t) is the drift coefficient
-        - g(t) is the diffusion coefficient
-        - w is a standard Wiener process
-    """
-
-    def __init__(self, N=1000):
-        """
-        Initialize SDE.
-
-        Args:
-            N: Number of discretization steps
-        """
-        super().__init__()
-        self.N = N
-
-    @property
-    @abstractmethod
-    def T(self):
-        """End time of the SDE."""
-        pass
-
-    @abstractmethod
-    def sde(self, x, t):
-        """
-        Compute drift and diffusion coefficients of the SDE.
-
-        Args:
-            x: Input tensor
-            t: Time tensor
-
-        Returns:
-            drift: f(x, t)
-            diffusion: g(t)
-        """
-        pass
-
-    @abstractmethod
-    def marginal_prob(self, x, t):
-        """
-        Parameters to compute the marginal distribution of the SDE, p_t(x).
-
-        For most SDEs, p_t(x) = N(mean, std^2 * I) given x_0.
-
-        Args:
-            x: Input tensor (clean data x_0)
-            t: Time tensor
-
-        Returns:
-            mean: Mean of p_t(x | x_0)
-            std: Standard deviation of p_t(x | x_0)
-        """
-        pass
-
-    @abstractmethod
-    def prior_sampling(self, shape):
-        """
-        Sample from the prior distribution at t=T.
-
-        Args:
-            shape: Shape of samples
-
-        Returns:
-            Samples from p_T(x)
-        """
-        pass
-
-    @abstractmethod
-    def prior_logp(self, z):
-        """
-        Compute log probability of the prior distribution.
-
-        Args:
-            z: Latent samples
-
-        Returns:
-            Log probability
-        """
-        pass
-
-    def discretize(self, x, t):
-        """
-        Discretize the SDE in the form: x_{i+1} = x_i + f_i + G_i z_i
-
-        Useful for ancestral sampling.
-
-        Args:
-            x: Input tensor
-            t: Time tensor
-
-        Returns:
-            f: Discretized drift
-            G: Discretized diffusion
-        """
-        dt = 1 / self.N
-        drift, diffusion = self.sde(x, t)
-        f = drift * dt
-        G = diffusion * math.sqrt(dt)
-        return f, G
-
-    def reverse(self, score_fn, probability_flow=False):
-        """
-        Create the reverse-time SDE/ODE.
-
-        Args:
-            score_fn: A function that computes the score ∇_x log p_t(x)
-            probability_flow: If True, returns probability flow ODE (deterministic)
-
-        Returns:
-            ReverseSDE object
-        """
-        N = self.N
-        T = self.T
-        sde_fn = self.sde
-        discretize_fn = self.discretize
-
-        class ReverseSDE(self.__class__):
-            """Reverse-time SDE."""
-
-            def __init__(self):
-                self.N = N
-                self.probability_flow = probability_flow
-
-            @property
-            def T(self):
-                return T
-
-            def sde(self, x, t):
-                """
-                Reverse SDE: dx = [f(x,t) - g(t)^2 * score]dt + g(t)dw_bar
-                """
-                drift, diffusion = sde_fn(x, t)
-                score = score_fn(x, t)
-                drift = drift - diffusion[:, None, None, None] ** 2 * score * (0.5 if self.probability_flow else 1.0)
-                # Set diffusion to 0 for ODE
-                diffusion = torch.zeros_like(diffusion) if self.probability_flow else diffusion
-                return drift, diffusion
-
-            def discretize(self, x, t):
-                """Discretize the reverse SDE."""
-                f, G = discretize_fn(x, t)
-                score = score_fn(x, t)
-                rev_f = f - G[:, None, None, None] ** 2 * score * (0.5 if self.probability_flow else 1.0)
-                rev_G = torch.zeros_like(G) if self.probability_flow else G
-                return rev_f, rev_G
-
-        return ReverseSDE()
 
 
 # ============================================================================
@@ -345,158 +188,49 @@ class subVPSDE(SDE):
 
 
 # ============================================================================
-# Score Network Architecture (NCSNv2 / DDPM++ style)
+# NCSN Score Network Wrapper for SDE Framework
 # ============================================================================
 
-class GaussianFourierProjection(nn.Module):
+class NCSNScoreNetworkWrapper(nn.Module):
     """
-    Gaussian Fourier embeddings for noise levels (positional encoding).
-    As used in the score SDE paper for time conditioning.
-    """
+    Wrapper for NCSN-style score networks (ScoreNet, DoubleScoreNet) to be used
+    with the SDE-based diffusion framework.
 
-    def __init__(self, embed_dim, scale=30.):
-        super().__init__()
-        # Register as buffer so it moves with model to device
-        self.register_buffer('W', torch.randn(embed_dim // 2) * scale)
+    This wrapper converts the continuous time t ∈ [0, 1] used in SDE diffusion
+    to the sigma-based conditioning used by NCSN networks.
 
-    def forward(self, t):
-        t_proj = t[:, None] * self.W[None, :] * 2 * np.pi
-        return torch.cat([torch.sin(t_proj), torch.cos(t_proj)], dim=-1)
-
-
-class ScoreNetworkSDE(nn.Module):
-    """
-    Score Network for SDE-based diffusion models.
-
-    Based on the NCSN++ architecture from the score SDE paper.
-    Uses time conditioning via Gaussian Fourier features or sinusoidal embeddings.
+    Args:
+        network_type: 'scorenet' or 'double_scorenet'
+        channels: Base number of channels
+        image_size: Size of input images
+        in_channels: Number of input channels
+        sde: The SDE object (VESDE, VPSDE, etc.) for computing sigma from t
     """
 
-    def __init__(self,
-                 in_channels=3,
-                 channels=128,
-                 out_channels=None,
-                 ch_mult=(1, 2, 2, 2),
-                 num_res_blocks=2,
-                 attn_resolutions=(16,),
-                 dropout=0.1,
-                 resamp_with_conv=True,
-                 image_size=32,
-                 embedding_type='fourier',
-                 fourier_scale=16.):
+    def __init__(self, network_type='double_scorenet', channels=128, image_size=32,
+                 in_channels=3, sde=None):
         super().__init__()
 
-        self.in_channels = in_channels
-        self.channels = channels
-        out_channels = out_channels if out_channels is not None else in_channels
-        self.out_channels = out_channels
-        self.ch_mult = ch_mult
-        self.num_resolutions = len(ch_mult)
-        self.num_res_blocks = num_res_blocks
-        self.image_size = image_size
+        self.sde = sde
+        self.network_type = network_type
 
-        # Time embedding
-        self.temb_ch = channels * 4
-        if embedding_type == 'fourier':
-            self.time_embed = nn.Sequential(
-                GaussianFourierProjection(channels, scale=fourier_scale),
-                nn.Linear(channels, self.temb_ch),
-                nn.SiLU(),
-                nn.Linear(self.temb_ch, self.temb_ch),
+        if network_type == 'scorenet':
+            self.net = ScoreNet(
+                channels=channels,
+                num_scales=1000,  # Not used for continuous time
+                image_size=image_size,
+                in_channels=in_channels
             )
-        else:  # 'positional'
-            self.time_embed = nn.Sequential(
-                nn.Linear(channels, self.temb_ch),
-                nn.SiLU(),
-                nn.Linear(self.temb_ch, self.temb_ch),
+        elif network_type == 'double_scorenet':
+            self.net = DoubleScoreNet(
+                channels=channels,
+                num_scales=1000,  # Not used for continuous time
+                image_size=image_size,
+                in_channels=in_channels
             )
-        self.embedding_type = embedding_type
-
-        # Downsampling
-        self.conv_in = nn.Conv2d(in_channels, channels, 3, padding=1)
-
-        curr_res = image_size
-        in_ch_mult = (1,) + ch_mult
-        self.down = nn.ModuleList()
-        block_in = None
-
-        for i_level in range(self.num_resolutions):
-            block = nn.ModuleList()
-            attn = nn.ModuleList()
-            block_in = channels * in_ch_mult[i_level]
-            block_out = channels * ch_mult[i_level]
-
-            for _ in range(num_res_blocks):
-                block.append(ResnetBlock(
-                    in_channels=block_in,
-                    out_channels=block_out,
-                    temb_channels=self.temb_ch,
-                    dropout=dropout
-                ))
-                block_in = block_out
-                if curr_res in attn_resolutions:
-                    attn.append(AttnBlock(block_in))
-
-            down = nn.Module()
-            down.block = block
-            down.attn = attn
-            if i_level != self.num_resolutions - 1:
-                down.downsample = Downsample(block_in, resamp_with_conv)
-                curr_res = curr_res // 2
-            self.down.append(down)
-
-        # Middle
-        self.mid = nn.Module()
-        self.mid.block_1 = ResnetBlock(
-            in_channels=block_in,
-            out_channels=block_in,
-            temb_channels=self.temb_ch,
-            dropout=dropout
-        )
-        self.mid.attn_1 = AttnBlock(block_in)
-        self.mid.block_2 = ResnetBlock(
-            in_channels=block_in,
-            out_channels=block_in,
-            temb_channels=self.temb_ch,
-            dropout=dropout
-        )
-
-        # Upsampling
-        self.up = nn.ModuleList()
-        for i_level in reversed(range(self.num_resolutions)):
-            block = nn.ModuleList()
-            attn = nn.ModuleList()
-            block_out = channels * ch_mult[i_level]
-            skip_in = channels * ch_mult[i_level]
-
-            for i_block in range(num_res_blocks + 1):
-                if i_block == num_res_blocks:
-                    skip_in = channels * in_ch_mult[i_level]
-                block.append(ResnetBlock(
-                    in_channels=block_in + skip_in,
-                    out_channels=block_out,
-                    temb_channels=self.temb_ch,
-                    dropout=dropout
-                ))
-                block_in = block_out
-                if curr_res in attn_resolutions:
-                    attn.append(AttnBlock(block_in))
-
-            up = nn.Module()
-            up.block = block
-            up.attn = attn
-            if i_level != 0:
-                up.upsample = Upsample(block_in, resamp_with_conv)
-                curr_res = curr_res * 2
-            self.up.insert(0, up)
-
-        # Output
-        self.norm_out = Normalize(block_in)
-        self.conv_out = nn.Conv2d(block_in, out_channels, 3, padding=1)
-
-        # Initialize final layer to near zero
-        nn.init.zeros_(self.conv_out.weight)
-        nn.init.zeros_(self.conv_out.bias)
+        else:
+            raise ValueError(f"Unknown network type: {network_type}. "
+                           f"Use 'scorenet' or 'double_scorenet'")
 
     def forward(self, x, t):
         """
@@ -509,80 +243,33 @@ class ScoreNetworkSDE(nn.Module):
         Returns:
             Score estimate (B, C, H, W)
         """
-        # Time embedding
-        if self.embedding_type == 'fourier':
-            temb = self.time_embed(t)
+        # Convert time t to sigma for NCSN networks
+        # The NCSN networks use sigma (noise level) for conditioning via log(sigma)
+        # We need to get the std/sigma from the SDE's marginal distribution
+        if self.sde is not None:
+            _, std = self.sde.marginal_prob(torch.zeros_like(x), t)
+            # std is the standard deviation of p(x_t | x_0)
+            # For VESDE: std = sigma_min * (sigma_max/sigma_min)^t
+            # For VPSDE: std = sqrt(1 - exp(-integral of beta))
+            if isinstance(std, torch.Tensor):
+                sigma = std
+            else:
+                sigma = torch.ones(x.shape[0], device=x.device) * std
         else:
-            temb = get_timestep_embedding(t * 1000, self.channels)  # Scale t for better embeddings
-            temb = self.time_embed(temb)
+            # Fallback: interpret t directly as sigma scale
+            sigma = t
 
-        # Downsampling
-        hs = [self.conv_in(x)]
-        for i_level in range(self.num_resolutions):
-            for i_block in range(self.num_res_blocks):
-                h = self.down[i_level].block[i_block](hs[-1], temb)
-                if len(self.down[i_level].attn) > 0:
-                    h = self.down[i_level].attn[i_block](h)
-                hs.append(h)
-            if i_level != self.num_resolutions - 1:
-                hs.append(self.down[i_level].downsample(hs[-1]))
+        # Ensure sigma has correct shape (B,)
+        if sigma.dim() == 0:
+            sigma = sigma.expand(x.shape[0])
+        elif sigma.dim() > 1:
+            # If std came out with extra dims, flatten to (B,)
+            sigma = sigma.view(-1)
 
-        # Middle
-        h = hs[-1]
-        h = self.mid.block_1(h, temb)
-        h = self.mid.attn_1(h)
-        h = self.mid.block_2(h, temb)
+        # Ensure sigma is positive (avoid log(0) in NCSN networks)
+        sigma = sigma.clamp(min=1e-5)
 
-        # Upsampling
-        for i_level in reversed(range(self.num_resolutions)):
-            for i_block in range(self.num_res_blocks + 1):
-                h = self.up[i_level].block[i_block](
-                    torch.cat([h, hs.pop()], dim=1), temb)
-                if len(self.up[i_level].attn) > 0:
-                    h = self.up[i_level].attn[i_block](h)
-            if i_level != 0:
-                h = self.up[i_level].upsample(h)
-
-        # Output
-        h = self.norm_out(h)
-        h = nonlinearity(h)
-        h = self.conv_out(h)
-
-        return h
-
-
-# ============================================================================
-# Predictor and Corrector Classes
-# ============================================================================
-
-class Predictor(ABC):
-    """Abstract class for predictors."""
-
-    def __init__(self, sde, score_fn, probability_flow=False):
-        self.sde = sde
-        self.score_fn = score_fn
-        self.probability_flow = probability_flow
-        self.rsde = sde.reverse(score_fn, probability_flow)
-
-    @abstractmethod
-    def update_fn(self, x, t):
-        """One update step."""
-        pass
-
-
-class Corrector(ABC):
-    """Abstract class for correctors."""
-
-    def __init__(self, sde, score_fn, snr, n_steps):
-        self.sde = sde
-        self.score_fn = score_fn
-        self.snr = snr
-        self.n_steps = n_steps
-
-    @abstractmethod
-    def update_fn(self, x, t):
-        """One correction step."""
-        pass
+        return self.net(x, sigma)
 
 
 class EulerMaruyamaPredictor(Predictor):
@@ -728,6 +415,7 @@ class SDEDiffusion(BaseModel):
                  dropout: float = None,
                  image_size: int = 32,
                  in_channels: int = 3,
+                 score_network_type: str = None,  # 'sde' (default), 'scorenet', 'double_scorenet'
                  # SDE parameters
                  sde_type: str = None,  # 'vesde', 'vpsde', 'subvpsde'
                  beta_min: float = None,
@@ -760,6 +448,10 @@ class SDEDiffusion(BaseModel):
             dropout: Dropout rate
             image_size: Size of input images
             in_channels: Number of input image channels
+            score_network_type: Type of score network architecture:
+                - 'sde': Default NCSN++ style U-Net with Fourier embeddings
+                - 'scorenet': NCSN-style ScoreNet with conditional instance norm
+                - 'double_scorenet': NCSN-style DoubleScoreNet (deeper architecture)
             sde_type: Type of SDE ('vesde', 'vpsde', 'subvpsde')
             beta_min: Minimum beta for VP-SDE
             beta_max: Maximum beta for VP-SDE
@@ -798,6 +490,7 @@ class SDEDiffusion(BaseModel):
         self.dropout = dropout if dropout is not None else config.get('dropout', 0.1)
         self.image_size = image_size
         self.in_channels = in_channels
+        self.score_network_type = score_network_type if score_network_type is not None else config.get('score_network_type', 'sde')
 
         # SDE parameters
         self.sde_type = sde_type if sde_type is not None else config.get('sde_type', 'vpsde')
@@ -821,17 +514,8 @@ class SDEDiffusion(BaseModel):
         # Initialize SDE
         self.sde = self._create_sde()
 
-        # Initialize score network
-        self.score_net = ScoreNetworkSDE(
-            in_channels=self.in_channels,
-            channels=self.channels,
-            ch_mult=self.ch_mult,
-            num_res_blocks=self.num_res_blocks,
-            attn_resolutions=self.attn_resolutions,
-            dropout=self.dropout,
-            image_size=self.image_size,
-            embedding_type='fourier'
-        )
+        # Initialize score network based on score_network_type
+        self.score_net = self._create_score_network()
 
         # Initialize optimizer
         self.optimizer = optim.Adam(self.score_net.parameters(), lr=self.lr, betas=(0.9, 0.999))
@@ -852,6 +536,35 @@ class SDEDiffusion(BaseModel):
             return subVPSDE(beta_min=self.beta_min, beta_max=self.beta_max, N=self.N)
         else:
             raise ValueError(f"Unknown SDE type: {self.sde_type}")
+
+    def _create_score_network(self):
+        """Create the score network based on score_network_type."""
+        network_type = self.score_network_type.lower()
+
+        if network_type == 'sde':
+            # Default NCSN++ style U-Net with Fourier embeddings
+            return ScoreNetworkSDE(
+                in_channels=self.in_channels,
+                channels=self.channels,
+                ch_mult=self.ch_mult,
+                num_res_blocks=self.num_res_blocks,
+                attn_resolutions=self.attn_resolutions,
+                dropout=self.dropout,
+                image_size=self.image_size,
+                embedding_type='fourier'
+            )
+        elif network_type in ['scorenet', 'double_scorenet']:
+            # NCSN-style networks wrapped for SDE framework
+            return NCSNScoreNetworkWrapper(
+                network_type=network_type,
+                channels=self.channels,
+                image_size=self.image_size,
+                in_channels=self.in_channels,
+                sde=self.sde
+            )
+        else:
+            raise ValueError(f"Unknown score network type: {self.score_network_type}. "
+                           f"Use 'sde', 'scorenet', or 'double_scorenet'")
 
     def forward(self, x, t):
         """
@@ -922,21 +635,15 @@ class SDEDiffusion(BaseModel):
         else:
             perturbed_x = mean + std * z
 
-        # Get network prediction
+        # Get network prediction (predicts epsilon/noise)
         score = self.score_net(perturbed_x, t)
 
-        # Target: the network should predict -z (scaled noise)
-        # The true score is: ∇_{x_t} log p(x_t|x_0) = -(x_t - mean) / std² = -z / std
-        # So we train the network to predict -z (the negative noise)
-        # And then scale by 1/std to get the score
-
-        # Compute loss: ||score + z||² (network predicts -z)
-        # This is equivalent to the standard denoising score matching loss
+        # Compute loss: network should match the sampled noise z (epsilon prediction)
+        # This keeps score_fn = -epsilon/std in sync with the true score -z/std.
         if isinstance(std, torch.Tensor):
-            # Weight by std² to balance contributions across noise levels
-            loss = torch.mean(torch.sum((score + z) ** 2, dim=[1, 2, 3]))
+            loss = torch.mean(torch.sum((score - z) ** 2, dim=[1, 2, 3]))
         else:
-            loss = torch.mean(torch.sum((score + z) ** 2, dim=[1, 2, 3]))
+            loss = torch.mean(torch.sum((score - z) ** 2, dim=[1, 2, 3]))
 
         return loss, t
 
@@ -1015,6 +722,7 @@ class SDEDiffusion(BaseModel):
                 'dropout': self.dropout,
                 'image_size': self.image_size,
                 'in_channels': self.in_channels,
+                'score_network_type': self.score_network_type,
                 'sde_type': self.sde_type,
                 'beta_min': self.beta_min,
                 'beta_max': self.beta_max,
