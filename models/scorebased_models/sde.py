@@ -3,6 +3,7 @@ import os
 import yaml
 from torch import optim
 
+from base.base_model import BaseModel
 from models.scorebased_models import *
 from utils.get_device import get_device
 from utils.helper_for_overfitting import show_images, load_test_batch
@@ -145,7 +146,7 @@ class NoiseScheduler(nn.Module):
         sqrt_one_minus_alpha_cumprod_t = (1 - self.alpha_cumprod[t]).sqrt().view(-1, 1, 1, 1)
         return sqrt_alpha_cumprod_t * x_0 + sqrt_one_minus_alpha_cumprod_t * noise
 
-class SDEModel(nn.Module):
+class SDEModel(BaseModel):
     def __init__(self,
                  config=None,
                  config_path=_DEFAULT_CONFIG_PATH,

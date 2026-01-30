@@ -20,3 +20,7 @@ class BaseModel(nn.Module, ABC):
         model_parameters = filter(lambda p: p.requires_grad, self.parameters())
         params = sum([np.prod(p.size()) for p in model_parameters])
         return super().__str__() + '\nTrainable parameters: {}'.format(params)
+
+    def epoch_step(self):
+        """Called at the end of each epoch"""
+        pass  # Can add learning rate scheduling here if needed
