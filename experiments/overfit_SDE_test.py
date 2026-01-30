@@ -1,9 +1,10 @@
+from models.scorebased_models.ddpm import create_ddpm
 from models.scorebased_models.sde import SDEModel
 from utils.get_device import get_device
 from utils.helper_for_overfitting import load_test_batch, show_images
 
 DEVICE = get_device()
-NUM_EPOCHS = 2000
+NUM_EPOCHS = 500
 NUM_SAMPLES = 16
 
 def main():
@@ -14,7 +15,7 @@ def main():
     # sde_type={'VESDE', 'VPSDE', 'subVPSDE'}
     # model = SDEDiffusion(score_network_type='sde', channels=64, sde_type='VESDE', lr=1e-3)
 
-    model = SDEModel(lr=1e-4, device=get_device())
+    model = create_ddpm(image_size=32, image_channels=3, timesteps=1000)
 
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(num_params)
@@ -25,15 +26,15 @@ def main():
     log = {'epoch': [], 'mean': [], 'std': [], 'absolute_mean': []}
     for epoch in range(NUM_EPOCHS):
         # Train on the single batch repeatedly
-        loss_dict = model.train_step(test_batch, epoch)
+        loss_dict = model.train_step(test_batch)
         loss_value = loss_dict['total_loss']
         losses.append(loss_value)
 
         if (epoch + 1) % 5 == 0:
             log['epoch'].append(epoch + 1)
-            log['mean'].append(model.unet.down1.conv1.weight.grad.mean().cpu().item())
-            log['std'].append(model.unet.down1.conv1.weight.grad.std().cpu().item())
-            log['absolute_mean'].append(model.unet.down1.conv1.weight.grad.abs().mean().cpu().item())
+            log['mean'].append(model.model.conv_in.weight.grad.mean().cpu().item())
+            log['std'].append(model.model.conv_in.weight.grad.std().cpu().item())
+            log['absolute_mean'].append(model.model.conv_in.weight.grad.abs().mean().cpu().item())
 
         if (epoch + 1) % 50 == 0:
             print(f"Epoch {epoch + 1}/{NUM_EPOCHS} - Loss: {loss_value:.6f}")

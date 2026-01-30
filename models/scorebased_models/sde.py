@@ -223,7 +223,7 @@ class SDEModel(BaseModel):
 
         return nn.functional.mse_loss(predicted_noise, noise)
 
-    def train_step(self, x, epoch):
+    def train_step(self, x, epoch=0):
         """
         Perform one training step
 
@@ -328,10 +328,9 @@ if __name__ == "__main__":
 
     test_batch = load_test_batch(num_samples)
     print(test_batch.shape)
-    loss_dict = model.train_step(test_batch, epoch=0)
+    loss_dict = model.train_step(test_batch)
 
     sampled_images = model.sample(1)
-    # sampled_images = (sampled_images - sampled_images.min()) / (sampled_images.max() - sampled_images.min())
     sampled_images.detach_()
 
     show_images(sampled_images, title="Sampled Images", n_row=1)
