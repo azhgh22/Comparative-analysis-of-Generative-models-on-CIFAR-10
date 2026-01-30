@@ -151,7 +151,7 @@ class VQVAE(nn.Module):
         z_e = self.encode(x)
         z_q, vq_loss, indices = self.quantize(z_e)
         recon = self.decode(z_q)
-        return recon, vq_loss, indices
+        return recon, z_q ,vq_loss, indices
 
     # -------- Loss --------
 
@@ -176,7 +176,7 @@ class VQVAE(nn.Module):
         optimizer = self.optimizer
 
         # Forward
-        recon_x, vq_loss, _ = self.forward(x)
+        recon_x, _ ,vq_loss, _ = self.forward(x)
 
         # Loss
         total_loss, recon_loss = self.vqvae_loss(recon_x, x, vq_loss)

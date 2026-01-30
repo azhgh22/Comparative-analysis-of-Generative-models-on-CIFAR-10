@@ -76,7 +76,7 @@ class PixelCNN(nn.Module):
         vq = self.vqvae.vq
         # Use VQ-VAE latent size
         sample_input = torch.zeros(1, 3, 32, 32).cuda()
-        _, _, indices_flat = self.vqvae(sample_input)
+        _, _ ,_, indices_flat = self.vqvae(sample_input)
         B, HW = batch_size, indices_flat.shape[1]
         H = W = int(HW ** 0.5)
 

@@ -148,3 +148,53 @@ def compute_mi(
 
     mi = (log_qz_given_x - log_qz).mean()
     return mi.item()
+    
+
+def compute_mi_vqvae(
+    model,
+    data_loader,
+    device,
+    num_batches=None
+):
+    """
+    Computes I(X;Z) for a VQ-VAE using codebook entropy.
+    """
+
+    model.eval()
+    num_embeddings = model.vq.num_embeddings
+
+    # Count code usage
+    counts = torch.zeros(num_embeddings, device=device)
+
+    total_latents = 0
+
+    with torch.no_grad():
+        for i, (x, _) in enumerate(data_loader):
+            if num_batches is not None and i >= num_batches:
+                break
+
+            x = x.to(device)
+
+            # Encode + quantize
+            z_e = model.encode(x)
+            _, _, indices = model.quantize(z_e)
+            # indices: [B, H*W]
+
+            indices = indices.view(-1)  # [B*H*W]
+
+            counts += torch.bincount(
+                indices,
+                minlength=num_embeddings
+            )
+
+            total_latents += indices.numel()
+
+    # Empirical distribution q(z)
+    probs = counts / total_latents
+    probs = probs[probs > 0]  # avoid log(0)
+
+    # Entropy = Mutual Information
+    mi = -torch.sum(probs * torch.log(probs))
+
+    return mi.item()
+
