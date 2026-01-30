@@ -225,7 +225,7 @@ class SDEModel(BaseModel):
 
         self.optimizer.step()
 
-        return {'total_loss': loss}
+        return {'total_loss': loss.item()}
 
     def sample(self, batch_size: int, n_steps=None) -> torch.Tensor:
         if n_steps is None:
