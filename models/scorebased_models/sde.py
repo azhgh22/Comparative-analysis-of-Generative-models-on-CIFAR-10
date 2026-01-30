@@ -12,7 +12,7 @@ from utils.helper_for_overfitting import show_images, load_test_batch
 _DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'configs', 'sde_diffusion.yaml')
 
 class ResBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, time_emb_dim, num_groups=8):
+    def __init__(self, in_channels, out_channels, time_emb_dim, num_groups=8, dropout=0.1):
         super().__init__()
         self.shortcut = nn.Conv2d(in_channels, out_channels, 1) if in_channels != out_channels else nn.Identity()
 
@@ -23,13 +23,14 @@ class ResBlock(nn.Module):
         self.conv2 = nn.Conv2d(out_channels, out_channels, 3, padding=1)
 
         self.time_mlp = nn.Linear(time_emb_dim, out_channels)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, t_emb):
         out = self.conv1(nn.functional.silu(self.norm1(x)))          # conv -> norm -> activation
-        time_emb_proj = self.time_mlp(nn.functional.silu(t_emb))     # project time embedding
+        time_emb_proj = nn.functional.silu(self.time_mlp(t_emb))     # project time embedding
 
         out = out + time_emb_proj[:, :, None, None]                  # add time embedding
-        out = self.conv2(nn.functional.silu(self.norm2(out)))        # conv -> norm -> activation
+        out = self.dropout(self.conv2(nn.functional.silu(self.norm2(out))))        # conv -> norm -> activation
         return self.shortcut(x) + out                                # skip connection
 
 class TimeEmbedding(nn.Module):
