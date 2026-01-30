@@ -116,7 +116,7 @@ class ConvVAERes(nn.Module):
         mu, logvar = self.encode(x)
         z = self.reparameterize(mu, logvar)
         recon = self.decode(z)
-        return recon, mu, logvar
+        return recon, z ,mu, logvar
 
     # -------- Training step --------
     def train_step(self, x,epoch):
@@ -128,7 +128,7 @@ class ConvVAERes(nn.Module):
         optimizer = self.optimizer
 
         # Forward
-        recon_x, mu, logvar = self.forward(x)
+        recon_x, _ ,mu, logvar = self.forward(x)
 
         # warmup_epochs = 20
         # beta = min(1.0, epoch / warmup_epochs)
