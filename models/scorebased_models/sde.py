@@ -287,7 +287,7 @@ class SDEModel(BaseModel):
         Args:
             model_state: Dictionary containing model state
         """
-        self.unet.load_state_dict(model_state['unet_state_dict'])
+        self.load_state_dict(model_state['model_state_dict'])
         self.optimizer.load_state_dict(model_state['optimizer_state_dict'])
 
 
