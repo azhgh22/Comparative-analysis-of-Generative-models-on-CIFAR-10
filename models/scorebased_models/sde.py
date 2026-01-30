@@ -287,9 +287,8 @@ class SDEModel(BaseModel):
         Args:
             model_state: Dictionary containing model state
         """
-        self.score_net.load_state_dict(model_state['u_net_state_dict'])
+        self.unet.load_state_dict(model_state['u_net_state_dict'])
         self.optimizer.load_state_dict(model_state['optimizer_state_dict'])
-        self.sigmas = model_state['sigmas'].to(self.device)
 
 
 if __name__ == "__main__":
