@@ -10,7 +10,7 @@ import math
 
 def compute_fid(
     real_loader,
-    model,
+    samples,
     device,
     num_gen=10000
 ):
@@ -43,39 +43,53 @@ def compute_fid(
     batch_size = real_loader.batch_size or 128
     steps = num_gen // batch_size
 
-    with torch.no_grad():
-        for _ in range(steps):
-            samples = model.sample(batch_size).to(device)
+    # i = 1
+    for sample in samples:
+        sample = sample.to(device)
+        samples_c = sample.clamp(0, 1)
+        fid_metric.update(samples_c, real=False)
 
-            # If samples are in [-1, 1], uncomment:
-            # samples = (samples + 1) / 2
 
-            samples = samples.clamp(0, 1)
-            fid_metric.update(samples, real=False)
+    # with torch.no_grad():
+    #     for _ in range(steps):
+    #         samples = model.sample(batch_size).to(device)
+    #         print("FID: ",i)
+    #         i+=1
+    #         # If samples are in [-1, 1], uncomment:
+    #         # samples = (samples + 1) / 2
+
+    #         samples = samples.clamp(0, 1)
+    #         fid_metric.update(samples, real=False)
 
     return fid_metric.compute().item()
 
 
 def compute_is(
-    model,
+    samples,
     device,
     num_gen=10_000,
-    batch_size=128
+    batch_size=256
 ):
     is_metric = InceptionScore(
         splits=10,      # standard
         normalize=True  # expects images in [0,1]
     ).to(device)
 
-    with torch.no_grad():
-        for _ in range(num_gen // batch_size):
-            samples = model.sample(batch_size).to(device)
+    for sample in samples:
+        sample = sample.to(device)
+        sample_c = sample.clamp(0, 1)
+        is_metric.update(sample_c)
 
-            # If samples in [-1,1], uncomment:
-            # samples = (samples + 1) / 2
 
-            samples = samples.clamp(0, 1)
-            is_metric.update(samples)
+    # with torch.no_grad():
+    #     for _ in range(num_gen // batch_size):
+    #         samples = model.sample(batch_size).to(device)
+
+    #         # If samples in [-1,1], uncomment:
+    #         # samples = (samples + 1) / 2
+
+    #         samples = samples.clamp(0, 1)
+    #         is_metric.update(samples)
 
     is_mean, is_std = is_metric.compute()
     return is_mean.item(), is_std.item()
