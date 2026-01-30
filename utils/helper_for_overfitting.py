@@ -33,7 +33,7 @@ def show_images(images, title="Images", n_row=4):
     # Display a grid of images
     images = images.cpu()
     # Denormalize from [-1, 1] to [0, 1]
-    # images = (images + 1) / 2
+    images = (images + 1) / 2
     images = torch.clamp(images, 0, 1)
 
     n = len(images)

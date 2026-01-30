@@ -14,7 +14,7 @@ def main():
     # sde_type={'VESDE', 'VPSDE', 'subVPSDE'}
     # model = SDEDiffusion(score_network_type='sde', channels=64, sde_type='VESDE', lr=1e-3)
 
-    model = SDEModel(lr=1e-3, device=get_device())
+    model = SDEModel(lr=1e-4, device=get_device())
 
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(num_params)
@@ -22,16 +22,47 @@ def main():
     model.train()
     test_batch = load_test_batch(NUM_SAMPLES)
 
+    log = {'epoch': [], 'mean': [], 'std': [], 'absolute_mean': []}
     for epoch in range(NUM_EPOCHS):
         # Train on the single batch repeatedly
         loss_dict = model.train_step(test_batch, epoch)
         loss_value = loss_dict['total_loss']
         losses.append(loss_value)
 
+        if (epoch + 1) % 5 == 0:
+            log['epoch'].append(epoch + 1)
+            log['mean'].append(model.unet.down1.conv1.weight.grad.mean().cpu().item())
+            log['std'].append(model.unet.down1.conv1.weight.grad.std().cpu().item())
+            log['absolute_mean'].append(model.unet.down1.conv1.weight.grad.abs().mean().cpu().item())
+
         if (epoch + 1) % 50 == 0:
             print(f"Epoch {epoch + 1}/{NUM_EPOCHS} - Loss: {loss_value:.6f}")
 
     print("Training completed!")
+
+    # plot log grad values as a function of epochs
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(12, 4))
+    plt.subplot(1, 3, 1)
+    plt.plot(log['epoch'], log['mean'], label='Mean of Gradients')
+    plt.xlabel('Epoch')
+    plt.ylabel('Mean')
+    plt.title('Mean of Gradients over Epochs')
+    plt.grid()
+    plt.subplot(1, 3, 2)
+    plt.plot(log['epoch'], log['std'], label='Std of Gradients', color='orange')
+    plt.xlabel('Epoch')
+    plt.ylabel('Standard Deviation')
+    plt.title('Std of Gradients over Epochs')
+    plt.grid()
+    plt.subplot(1, 3, 3)
+    plt.plot(log['epoch'], log['absolute_mean'], label='Absolute Mean of Gradients', color='green')
+    plt.xlabel('Epoch')
+    plt.ylabel('Absolute Mean')
+    plt.title('Absolute Mean of Gradients over Epochs')
+    plt.grid()
+    plt.tight_layout()
+    plt.show()
 
     num_samples = 16
     # Sampling

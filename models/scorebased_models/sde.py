@@ -1,5 +1,6 @@
 import os
 
+import torch.nn.utils
 import yaml
 from torch import optim
 
@@ -11,19 +12,24 @@ from utils.helper_for_overfitting import show_images, load_test_batch
 _DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'configs', 'sde_diffusion.yaml')
 
 class ResBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, time_emb_dim):
+    def __init__(self, in_channels, out_channels, time_emb_dim, num_groups=8):
         super().__init__()
         self.shortcut = nn.Conv2d(in_channels, out_channels, 1) if in_channels != out_channels else nn.Identity()
+
+        self.norm1 = nn.GroupNorm(num_groups, in_channels)
         self.conv1 = nn.Conv2d(in_channels, out_channels, 3, padding=1)
+
+        self.norm2 = nn.GroupNorm(num_groups, out_channels)
         self.conv2 = nn.Conv2d(out_channels, out_channels, 3, padding=1)
+
         self.time_mlp = nn.Linear(time_emb_dim, out_channels)
 
     def forward(self, x, t_emb):
-        out = self.conv1(nn.functional.silu(x))                      # 256 -> 128
+        out = self.conv1(nn.functional.silu(self.norm1(x)))          # conv -> norm -> activation
         time_emb_proj = self.time_mlp(nn.functional.silu(t_emb))     # project time embedding
 
         out = out + time_emb_proj[:, :, None, None]                  # add time embedding
-        out = self.conv2(nn.functional.silu(out))                    # 128 -> 128
+        out = self.conv2(nn.functional.silu(self.norm2(out)))        # conv -> norm -> activation
         return self.shortcut(x) + out                                # skip connection
 
 class TimeEmbedding(nn.Module):
@@ -89,6 +95,26 @@ class DiffusionUNet(nn.Module):
 
         # Final output layer
         self.final_conv = nn.Conv2d(16, 3, 1)
+
+        # Initialize weights
+        # self._init_weights()
+
+    def _init_weights(self):
+        """Initialize weights appropriately for diffusion models with GroupNorm and SiLU"""
+        for m in self.modules():
+            if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
+                # Use fan_in mode for forward pass stability, and 'silu' approximates SiLU better
+                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='sigmoid')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.GroupNorm):
+                # GroupNorm: weight=1, bias=0 is the correct default (identity transform)
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
 
     def forward(self, x, t):
         # 1. Create Time Embedding
@@ -221,7 +247,8 @@ class SDEModel(BaseModel):
         loss.backward()
 
         # Gradient clipping to prevent exploding gradients
-        torch.nn.utils.clip_grad_norm_(self.unet.parameters(), max_norm=1.0)
+        # torch.nn.utils.clip_grad_norm_(self.unet.parameters(), max_norm=1.0, norm_type=2)
+        torch.nn.utils.clip_grad_value_(self.unet.parameters(), clip_value=0.01)
 
         self.optimizer.step()
 
