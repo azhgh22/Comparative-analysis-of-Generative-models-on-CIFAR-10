@@ -150,7 +150,6 @@ class SDEModel(BaseModel):
     def __init__(self,
                  config=None,
                  config_path=_DEFAULT_CONFIG_PATH,
-                 channels: int = None,
                  num_steps=1000,
                  image_size: int = 32,
                  in_channels: int = 3,
@@ -161,7 +160,6 @@ class SDEModel(BaseModel):
         self.in_channels = in_channels
         self.image_size = image_size
         self.device = device if device is not None else get_device()
-        self.channels = channels if channels is not None else config.get('channels', 128)
 
         # Load config from file if config dict not provided
         if config is None:
@@ -276,7 +274,6 @@ class SDEModel(BaseModel):
             'model_state_dict': self.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'config': {
-                'channels': self.channels,
                 'image_size': self.image_size,
                 'in_channels': self.in_channels,
                 'lr': self.lr
