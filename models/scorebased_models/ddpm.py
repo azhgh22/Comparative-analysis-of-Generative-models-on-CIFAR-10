@@ -425,7 +425,7 @@ class DDPM(BaseModel):
         """
         pass
 
-    def train_step(self, x_0: torch.Tensor):
+    def train_step(self, x_0: torch.Tensor, epoch=None) -> dict:
         """
         Training forward pass: Algorithm 1 from the paper.
 
