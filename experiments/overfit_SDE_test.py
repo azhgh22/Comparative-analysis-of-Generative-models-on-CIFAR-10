@@ -15,7 +15,7 @@ def main():
     # sde_type={'VESDE', 'VPSDE', 'subVPSDE'}
     # model = SDEDiffusion(score_network_type='sde', channels=64, sde_type='VESDE', lr=1e-3)
 
-    model = create_ddpm(image_size=32, image_channels=3, timesteps=1000)
+    model = create_ddpm(image_size=32, in_channels=3, timesteps=1000)
 
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(num_params)

@@ -135,7 +135,7 @@ class UNet(nn.Module):
 
     def __init__(
             self,
-            image_channels: int = 3,
+            in_channels: int = 3,
             base_channels: int = 128,
             channel_mults: Tuple[int, ...] = (1, 2, 2, 2),
             num_res_blocks: int = 2,
@@ -145,7 +145,7 @@ class UNet(nn.Module):
     ):
         super().__init__()
 
-        self.image_channels = image_channels
+        self.in_channels = in_channels
         self.time_emb_dim = time_emb_dim
 
         # Time embedding
@@ -157,7 +157,7 @@ class UNet(nn.Module):
         )
 
         # Initial convolution
-        self.conv_in = nn.Conv2d(image_channels, base_channels, kernel_size=3, padding=1)
+        self.conv_in = nn.Conv2d(in_channels, base_channels, kernel_size=3, padding=1)
 
         # Downsampling
         self.down_blocks = nn.ModuleList()
@@ -215,7 +215,7 @@ class UNet(nn.Module):
 
         # Output
         self.out_norm = nn.GroupNorm(8, now_channels)
-        self.conv_out = nn.Conv2d(now_channels, image_channels, kernel_size=3, padding=1)
+        self.conv_out = nn.Conv2d(now_channels, in_channels, kernel_size=3, padding=1)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         # Time embedding
@@ -271,7 +271,7 @@ class DDPM(BaseModel):
             timesteps: int = 1000,
             beta_schedule: str = "linear",
             image_size: int = 32,
-            image_channels: int = 3,
+            in_channels: int = 3,
             lr: float = 1e-4,
             device: str = None
     ):
@@ -280,7 +280,7 @@ class DDPM(BaseModel):
         self.model = model
         self.timesteps = timesteps
         self.image_size = image_size
-        self.image_channels = image_channels
+        self.in_channels = in_channels
         self.lr = lr
         self.device = device if device is not None else get_device()
 
@@ -396,7 +396,7 @@ class DDPM(BaseModel):
         device = next(self.model.parameters()).device
 
         # Start from random noise
-        x = torch.randn(batch_size, self.image_channels, self.image_size, self.image_size, device=device)
+        x = torch.randn(batch_size, self.in_channels, self.image_size, self.image_size, device=device)
 
         if return_all_timesteps:
             imgs = [x]
@@ -493,7 +493,7 @@ class DDPM(BaseModel):
 
 def create_ddpm(
         image_size: int = 32,
-        image_channels: int = 3,
+        in_channels: int = 3,
         timesteps: int = 1000,
         base_channels: int = 128,
 ) -> DDPM:
@@ -502,7 +502,7 @@ def create_ddpm(
 
     Args:
         image_size: Size of input images (assumes square images)
-        image_channels: Number of channels (3 for RGB)
+        in_channels: Number of channels (3 for RGB)
         timesteps: Number of diffusion steps (T)
         base_channels: Base number of channels in U-Net
 
@@ -511,7 +511,7 @@ def create_ddpm(
     """
     # Create U-Net model
     model = UNet(
-        image_channels=image_channels,
+        in_channels=in_channels,
         base_channels=base_channels,
         channel_mults=(1, 2, 2, 2),
         num_res_blocks=2,
@@ -526,7 +526,7 @@ def create_ddpm(
         timesteps=timesteps,
         beta_schedule="linear",
         image_size=image_size,
-        image_channels=image_channels,
+        in_channels=in_channels,
     )
 
     return ddpm
@@ -538,7 +538,7 @@ if __name__ == "__main__":
     num_samples = 1
 
     # Create model
-    model = create_ddpm(image_size=32, image_channels=3, timesteps=1000)
+    model = create_ddpm(image_size=32, in_channels=3, timesteps=1000)
     model = model.to(device)
 
     print(f"Model created with {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M parameters")
